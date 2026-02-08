@@ -17,51 +17,57 @@ class AiService {
     private function initTables(): void {
         $this->db->exec("
             CREATE TABLE IF NOT EXISTS ai_knowledge (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain TEXT,
-                type TEXT NOT NULL,
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                domain VARCHAR(255),
+                type VARCHAR(50) NOT NULL,
                 content TEXT NOT NULL,
-                source TEXT,
-                added_by INTEGER,
+                source VARCHAR(255),
+                added_by INT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-            
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+        
+        $this->db->exec("
             CREATE TABLE IF NOT EXISTS ai_conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                title TEXT,
-                domain TEXT,
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                user_id INT NOT NULL,
+                title VARCHAR(255),
+                domain VARCHAR(255),
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
-            );
-            
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+        
+        $this->db->exec("
             CREATE TABLE IF NOT EXISTS ai_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                conversation_id INTEGER NOT NULL,
-                role TEXT NOT NULL,
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                conversation_id INT NOT NULL,
+                role VARCHAR(20) NOT NULL,
                 content TEXT NOT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (conversation_id) REFERENCES ai_conversations(id) ON DELETE CASCADE
-            );
-            
-            CREATE TABLE IF NOT EXISTS domain_details_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                domain_id INTEGER NOT NULL,
-                whois_raw TEXT,
-                whois_parsed TEXT,
-                scrape_data TEXT,
-                google_data TEXT,
-                dns_records TEXT,
-                ai_analysis TEXT,
-                scraped_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
-            );
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ");
         
-        // Add unique index on domain_id for cache
+        $this->db->exec("
+            CREATE TABLE IF NOT EXISTS domain_details_cache (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                domain_id INT NOT NULL UNIQUE,
+                whois_raw LONGTEXT,
+                whois_parsed LONGTEXT,
+                scrape_data LONGTEXT,
+                google_data LONGTEXT,
+                dns_records LONGTEXT,
+                ai_analysis LONGTEXT,
+                scraped_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+        
+        // Add unique index on domain_id for cache (already defined as UNIQUE above)
         try {
-            $this->db->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_domain_details_domain_id ON domain_details_cache(domain_id)");
+            $this->db->exec("CREATE UNIQUE INDEX idx_domain_details_domain_id ON domain_details_cache(domain_id)");
         } catch (Exception $e) {
             // Ignore if already exists
         }
@@ -208,7 +214,7 @@ class AiService {
             $stmt->execute([$conversationId, $aiResponse]);
             
             // Update conversation timestamp
-            $stmt = $this->db->prepare("UPDATE ai_conversations SET updated_at = datetime('now') WHERE id = ?");
+            $stmt = $this->db->prepare("UPDATE ai_conversations SET updated_at = NOW() WHERE id = ?");
             $stmt->execute([$conversationId]);
         }
         
@@ -415,9 +421,9 @@ class AiService {
      */
     public function cacheDomainDetails(int $domainId, array $data): void {
         $stmt = $this->db->prepare("
-            INSERT OR REPLACE INTO domain_details_cache 
+            REPLACE INTO domain_details_cache 
             (domain_id, whois_raw, whois_parsed, scrape_data, google_data, dns_records, ai_analysis, scraped_at) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
         ");
         $stmt->execute([
             $domainId,
