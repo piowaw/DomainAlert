@@ -39,6 +39,13 @@ function initDatabase(): PDO {
     $db = new PDO('sqlite:' . DB_PATH);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
+    // Critical for 100 concurrent workers:
+    $db->exec("PRAGMA journal_mode=WAL");          // Allow concurrent reads + 1 writer
+    $db->exec("PRAGMA busy_timeout=30000");         // Wait up to 30s for locks instead of failing
+    $db->exec("PRAGMA synchronous=NORMAL");         // Faster writes (safe with WAL)
+    $db->exec("PRAGMA cache_size=-64000");           // 64MB cache
+    $db->exec("PRAGMA temp_store=MEMORY");           // Temp tables in RAM
+    
     $db->exec("
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

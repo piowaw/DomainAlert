@@ -792,60 +792,106 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
     }
     
     // Process a batch of a pending job — each call handles batch_size domains
-    // with parallel RDAP (20 concurrent per request).
-    // Frontend fires MANY of these in parallel = many workers = max speed.
-    // 10 parallel requests × 20 domains × 20 concurrent RDAP = 200 simultaneous lookups
+    // with parallel RDAP. Frontend fires many of these in parallel.
+    // DB writes are minimal and use retry logic for SQLite concurrency.
     if ($action === 'process' && $method === 'POST') {
         $jobId = $input['job_id'] ?? 0;
         $batchSize = min(50, max(1, (int)($input['batch_size'] ?? 20)));
         
-        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
-        $stmt->execute([$jobId]);
-        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        // Atomic claim: advance processed counter in one UPDATE
+        // Only succeeds if no other worker changed it between our read and write
+        // Uses a single statement to avoid race conditions
+        $claim = $db->prepare("UPDATE jobs SET processed = MIN(processed + ?, total), status = 'processing', updated_at = datetime('now') WHERE id = ? AND status IN ('pending', 'processing') AND processed < total RETURNING processed, total, errors, type, data");
         
-        if (!$job) {
-            jsonResponse(['error' => 'Job not found'], 404);
+        // Try claim with retry for SQLite busy
+        $claimedJob = null;
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            try {
+                $claim->execute([$batchSize, $jobId]);
+                $claimedJob = $claim->fetch(PDO::FETCH_ASSOC);
+                break;
+            } catch (Exception $e) {
+                if ($attempt < 9 && str_contains($e->getMessage(), 'locked')) {
+                    usleep(50000 * ($attempt + 1)); // 50-500ms backoff
+                } else {
+                    // RETURNING not supported on older SQLite — fall back
+                    break;
+                }
+            }
         }
         
-        if ($job['status'] === 'completed') {
-            jsonResponse(['job' => $job, 'message' => 'Job already completed']);
+        // Fallback: if RETURNING not supported or claim failed, use read-then-write
+        if ($claimedJob === null || $claimedJob === false) {
+            // Read current state
+            for ($attempt = 0; $attempt < 10; $attempt++) {
+                try {
+                    $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+                    $stmt->execute([$jobId]);
+                    $job = $stmt->fetch(PDO::FETCH_ASSOC);
+                    break;
+                } catch (Exception $e) {
+                    if ($attempt < 9 && str_contains($e->getMessage(), 'locked')) {
+                        usleep(50000 * ($attempt + 1));
+                    } else {
+                        jsonResponse(['error' => $e->getMessage()], 500);
+                    }
+                }
+            }
+            
+            if (!$job) {
+                jsonResponse(['error' => 'Job not found'], 404);
+            }
+            if ($job['status'] === 'completed' || (int)$job['processed'] >= (int)$job['total']) {
+                jsonResponse(['job' => $job, 'message' => 'completed']);
+            }
+            
+            $claimStart = (int)$job['processed'];
+            $claimEnd = min($claimStart + $batchSize, (int)$job['total']);
+            
+            // Try atomic claim
+            for ($attempt = 0; $attempt < 10; $attempt++) {
+                try {
+                    $upd = $db->prepare("UPDATE jobs SET processed = ?, status = 'processing', updated_at = datetime('now') WHERE id = ? AND processed = ?");
+                    $upd->execute([$claimEnd, $jobId, $claimStart]);
+                    if ($upd->rowCount() > 0) {
+                        break; // claimed successfully
+                    }
+                    // Another worker got it — re-read
+                    $stmt->execute([$jobId]);
+                    $job = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ((int)$job['processed'] >= (int)$job['total']) {
+                        jsonResponse(['job' => $job, 'message' => 'completed']);
+                    }
+                    $claimStart = (int)$job['processed'];
+                    $claimEnd = min($claimStart + $batchSize, (int)$job['total']);
+                } catch (Exception $e) {
+                    if ($attempt < 9 && str_contains($e->getMessage(), 'locked')) {
+                        usleep(50000 * ($attempt + 1));
+                    } else {
+                        jsonResponse(['error' => $e->getMessage()], 500);
+                    }
+                }
+            }
+            
+            $claimedJob = [
+                'processed' => $claimEnd,
+                'total' => (int)$job['total'],
+                'errors' => (int)$job['errors'],
+                'type' => $job['type'],
+                'data' => $job['data'],
+            ];
+        } else {
+            // RETURNING worked — claimStart is (processed - batchSize)
+            $claimEnd = (int)$claimedJob['processed'];
+            $claimStart = max(0, $claimEnd - $batchSize);
         }
         
-        // Mark as processing
-        $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
-        
-        // Claim a batch atomically: read current processed, advance it
-        // This prevents multiple parallel workers from processing the same domains
-        $processed = (int)$job['processed'];
-        $errors = (int)$job['errors'];
-        $total = (int)$job['total'];
-        
-        if ($processed >= $total) {
-            $db->prepare("UPDATE jobs SET status = 'completed', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
-            $stmt->execute([$jobId]);
-            jsonResponse(['job' => $stmt->fetch(PDO::FETCH_ASSOC), 'message' => 'completed']);
-        }
-        
-        // Claim this batch by advancing processed counter immediately
-        $claimStart = $processed;
-        $claimEnd = min($processed + $batchSize, $total);
-        $db->prepare("UPDATE jobs SET processed = ?, updated_at = datetime('now') WHERE id = ? AND processed = ?")
-           ->execute([$claimEnd, $jobId, $claimStart]);
-        
-        // Check if we actually claimed it (another worker might have)
-        if ($db->prepare("SELECT changes()")->query()->fetchColumn() === 0) {
-            // Another worker claimed this range, re-read and try to find unclaimed work
-            $stmt->execute([$jobId]);
-            $job = $stmt->fetch(PDO::FETCH_ASSOC);
-            jsonResponse(['job' => $job, 'message' => 'batch claimed by another worker']);
-        }
-        
-        $rdap = new RdapEngine(20); // 20 concurrent per worker — multiply by # of parallel frontend requests
-        $jobDataDecoded = json_decode($job['data'], true);
-        $batchProcessed = 0;
+        // Now do the actual work — RDAP lookups (no DB needed, can run in parallel)
+        $rdap = new RdapEngine(20);
+        $jobDataDecoded = json_decode($claimedJob['data'], true);
         $batchErrors = 0;
         
-        if ($job['type'] === 'import') {
+        if ($claimedJob['type'] === 'import') {
             $domainList = $jobDataDecoded;
             $batch = array_slice($domainList, $claimStart, $claimEnd - $claimStart);
             
@@ -862,7 +908,7 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                 $cleanNames[] = $name;
             }
             
-            // Filter existing
+            // Filter existing (read-only, no lock contention)
             $toCheck = $cleanNames;
             if (!empty($cleanNames)) {
                 $existing = [];
@@ -870,12 +916,11 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                 $s = $db->prepare("SELECT domain FROM domains WHERE domain IN ($ph)");
                 $s->execute($cleanNames);
                 foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $d) $existing[$d] = true;
-                $toCheck = array_filter($cleanNames, fn($n) => !isset($existing[$n]));
+                $toCheck = array_values(array_filter($cleanNames, fn($n) => !isset($existing[$n])));
             }
             
-            // Parallel RDAP lookup
+            // Parallel RDAP lookup (no DB, pure network)
             if (!empty($toCheck)) {
-                $toCheck = array_values($toCheck);
                 $rdapResults = $rdap->lookupBatch($toCheck);
                 
                 // Fallback for misses
@@ -890,19 +935,32 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                     }
                 }
                 
-                // Batch INSERT
-                $db->beginTransaction();
-                $ins = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
-                foreach ($toCheck as $name) {
-                    $data = $rdapResults[$name] ?? null;
-                    if ($data) {
-                        $ins->execute([$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0, $user['id']]);
+                // Single quick DB write with retry
+                for ($attempt = 0; $attempt < 10; $attempt++) {
+                    try {
+                        $db->beginTransaction();
+                        $ins = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
+                        foreach ($toCheck as $name) {
+                            $data = $rdapResults[$name] ?? null;
+                            if ($data) {
+                                $ins->execute([$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0, $user['id']]);
+                            }
+                        }
+                        $db->commit();
+                        break;
+                    } catch (Exception $e) {
+                        if ($db->inTransaction()) $db->rollBack();
+                        if ($attempt < 9 && str_contains($e->getMessage(), 'locked')) {
+                            usleep(100000 * ($attempt + 1)); // 100ms-1s backoff
+                        } else {
+                            $batchErrors += count($toCheck);
+                            break; // give up on this batch but don't crash
+                        }
                     }
                 }
-                $db->commit();
             }
             
-        } elseif ($job['type'] === 'whois_check') {
+        } elseif ($claimedJob['type'] === 'whois_check') {
             $domainIds = $jobDataDecoded['domain_ids'] ?? [];
             $batchIds = array_slice($domainIds, $claimStart, $claimEnd - $claimStart);
             
@@ -923,31 +981,60 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                         }
                     }
                     
-                    $db->beginTransaction();
-                    $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
-                    foreach ($rows as $name => $row) {
-                        $data = $rdapResults[$name] ?? null;
-                        if ($data) {
-                            $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
+                    // Single quick DB write with retry
+                    for ($attempt = 0; $attempt < 10; $attempt++) {
+                        try {
+                            $db->beginTransaction();
+                            $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+                            foreach ($rows as $name => $row) {
+                                $data = $rdapResults[$name] ?? null;
+                                if ($data) {
+                                    $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
+                                }
+                            }
+                            $db->commit();
+                            break;
+                        } catch (Exception $e) {
+                            if ($db->inTransaction()) $db->rollBack();
+                            if ($attempt < 9 && str_contains($e->getMessage(), 'locked')) {
+                                usleep(100000 * ($attempt + 1));
+                            } else {
+                                $batchErrors += count($rows);
+                                break;
+                            }
                         }
                     }
-                    $db->commit();
                 }
             }
         }
         
-        // Update errors count (processed was already advanced when claiming)
+        // Update errors (with retry)
         if ($batchErrors > 0) {
-            $db->prepare("UPDATE jobs SET errors = errors + ?, updated_at = datetime('now') WHERE id = ?")->execute([$batchErrors, $jobId]);
+            for ($attempt = 0; $attempt < 5; $attempt++) {
+                try {
+                    $db->prepare("UPDATE jobs SET errors = errors + ?, updated_at = datetime('now') WHERE id = ?")->execute([$batchErrors, $jobId]);
+                    break;
+                } catch (Exception $e) {
+                    if ($attempt < 4 && str_contains($e->getMessage(), 'locked')) usleep(50000 * ($attempt + 1));
+                }
+            }
         }
         
-        // Check if job is now complete
-        $stmt->execute([$jobId]);
-        $job = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ((int)$job['processed'] >= (int)$job['total']) {
-            $db->prepare("UPDATE jobs SET status = 'completed', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
-            $stmt->execute([$jobId]);
-            $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        // Read final state (with retry)
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            try {
+                $finalStmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+                $finalStmt->execute([$jobId]);
+                $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
+                if ((int)$job['processed'] >= (int)$job['total'] && $job['status'] !== 'completed') {
+                    $db->prepare("UPDATE jobs SET status = 'completed', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
+                    $finalStmt->execute([$jobId]);
+                    $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
+                }
+                break;
+            } catch (Exception $e) {
+                if ($attempt < 4 && str_contains($e->getMessage(), 'locked')) usleep(50000 * ($attempt + 1));
+            }
         }
         
         jsonResponse(['job' => $job]);

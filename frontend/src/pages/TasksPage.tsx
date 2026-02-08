@@ -50,10 +50,10 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // 100 parallel workers — each processes batch_size=20 with 20 concurrent RDAP
-  // 100 × 20 × 20 = 40,000 simultaneous RDAP connections (uses the 50GB RAM)
-  const NUM_WORKERS = 100;
-  const BATCH_SIZE = 20;
+  // 10 parallel workers — SQLite serializes writes, so more workers = more lock contention
+  // 10 × 50 × 20 = 10,000 simultaneous RDAP connections (still fast, no DB locks)
+  const NUM_WORKERS = 10;
+  const BATCH_SIZE = 50;
   
   useEffect(() => {
     const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'processing');
@@ -172,7 +172,7 @@ export default function TasksPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Zadania</h1>
-          <p className="text-muted-foreground">Zadania w tle ({NUM_WORKERS} workerów)</p>
+          <p className="text-muted-foreground">Zadania w tle ({NUM_WORKERS} workerów, batch={BATCH_SIZE})</p>
         </div>
         <Button variant="outline" onClick={loadJobs}>
           <RefreshCw className="h-4 w-4 mr-2" />
