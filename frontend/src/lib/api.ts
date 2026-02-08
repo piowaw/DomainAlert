@@ -395,6 +395,12 @@ export async function getDomainDetails(id: number, refresh = false) {
   return apiCall<{ domain: Domain; details: DomainDetails; cached: boolean }>(`domains/${id}${qs}`);
 }
 
+export async function getDomainAiAnalysis(domainId: number) {
+  return apiCall<{ ai_analysis: string | null; error: string | null }>(`ai/analyze/${domainId}`, {
+    method: 'POST',
+  });
+}
+
 // AI
 export interface AiStatus {
   ollama_running: boolean;

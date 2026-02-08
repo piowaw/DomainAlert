@@ -392,7 +392,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
         ]);
     }
     
-    // Get full domain details (WHOIS + scrape + Google + DNS + AI)
+    // Get full domain details (WHOIS + scrape + Google + DNS) — AI loaded separately
     if (is_numeric($action) && $method === 'GET') {
         $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
         $stmt->execute([$action]);
@@ -413,23 +413,20 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
             ]);
         }
         
-        // Gather all data
+        // Gather all data EXCEPT AI (AI is loaded async via separate endpoint)
         $whoisData = $whois->lookup($domain['domain']);
         $scrapeData = $scraper->scrapeWebsite($domain['domain']);
         $googleData = $scraper->searchGoogle($domain['domain']);
         $dnsRecords = $scraper->getDnsRecords($domain['domain']);
         
-        // AI Analysis (if available)
-        $aiAnalysis = $ai->analyzeDomain($domain['domain'], $whoisData, $scrapeData, $googleData);
-        
-        // Cache the results
+        // Cache the results without AI (AI will be cached separately)
         $details = [
             'whois_raw' => $whoisData['raw'] ?? '',
             'whois_parsed' => $whoisData,
             'scrape_data' => $scrapeData,
             'google_data' => $googleData,
             'dns_records' => $dnsRecords,
-            'ai_analysis' => $aiAnalysis,
+            'ai_analysis' => null,
         ];
         
         $ai->cacheDomainDetails((int)$action, $details);
@@ -451,7 +448,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
                 'scrape_data' => $scrapeData,
                 'google_data' => $googleData,
                 'dns_records' => $dnsRecords,
-                'ai_analysis' => $aiAnalysis,
+                'ai_analysis' => null,
                 'scraped_at' => date('Y-m-d H:i:s'),
             ],
             'cached' => false,
@@ -966,8 +963,42 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
         jsonResponse($status);
     }
     
+    // Analyze domain with AI (async endpoint)
+    if ($action === 'analyze' && is_numeric($subAction) && $method === 'POST') {
+        set_time_limit(300);
+        
+        $domainId = (int)$subAction;
+        $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
+        $stmt->execute([$domainId]);
+        $domain = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$domain) {
+            jsonResponse(['error' => 'Domain not found'], 404);
+        }
+        
+        // Get cached details for context
+        $cached = $ai->getCachedDomainDetails($domainId);
+        $whoisData = $cached['whois_parsed'] ?? [];
+        $scrapeData = $cached['scrape_data'] ?? [];
+        $googleData = $cached['google_data'] ?? [];
+        
+        $aiAnalysis = $ai->analyzeDomain($domain['domain'], $whoisData, $scrapeData, $googleData);
+        
+        // Update cache with AI analysis
+        if ($aiAnalysis && $cached) {
+            $cached['ai_analysis'] = $aiAnalysis;
+            $ai->cacheDomainDetails($domainId, $cached);
+        }
+        
+        jsonResponse([
+            'ai_analysis' => $aiAnalysis,
+            'error' => $aiAnalysis === null ? 'AI nie odpowiedziała. Sprawdź czy model jest pobrany.' : null,
+        ]);
+    }
+    
     // Test AI connection — actually sends a simple prompt
     if ($action === 'test' && $method === 'POST') {
+        set_time_limit(120);
         requireAdmin();
         $status = $ai->getStatus();
         
@@ -1019,6 +1050,7 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // Send message to conversation
     if ($action === 'conversations' && is_numeric($subAction) && $method === 'POST') {
+        set_time_limit(300);
         $message = $input['message'] ?? '';
         if (empty($message)) {
             jsonResponse(['error' => 'Message is required'], 400);
@@ -1067,6 +1099,7 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // Quick chat (no conversation)
     if ($action === 'chat' && $method === 'POST') {
+        set_time_limit(300);
         $message = $input['message'] ?? '';
         if (empty($message)) {
             jsonResponse(['error' => 'Message is required'], 400);
@@ -1127,6 +1160,7 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // Pull model (inside Docker container)
     if ($action === 'pull-model' && $method === 'POST') {
+        set_time_limit(600);
         requireAdmin();
         $model = $input['model'] ?? OLLAMA_MODEL;
         $output = [];

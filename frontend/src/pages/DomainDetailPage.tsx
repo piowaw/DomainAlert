@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { getDomainDetails, type Domain, type DomainDetails } from '@/lib/api';
+import { getDomainDetails, getDomainAiAnalysis, type Domain, type DomainDetails } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -40,6 +40,8 @@ export default function DomainDetailPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [cached, setCached] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
 
   const loadDetails = async (refresh = false) => {
     if (!id) return;
@@ -52,6 +54,11 @@ export default function DomainDetailPage() {
       setDomain(result.domain);
       setDetails(result.details);
       setCached(result.cached);
+      
+      // If cached AI analysis exists, use it
+      if (result.details.ai_analysis) {
+        setAiAnalysis(result.details.ai_analysis);
+      }
     } catch (err: unknown) {
       toast({
         title: 'Błąd',
@@ -61,6 +68,31 @@ export default function DomainDetailPage() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const loadAiAnalysis = async () => {
+    if (!id) return;
+    setAiLoading(true);
+    try {
+      const result = await getDomainAiAnalysis(parseInt(id));
+      if (result.ai_analysis) {
+        setAiAnalysis(result.ai_analysis);
+      } else {
+        toast({
+          title: 'AI niedostępna',
+          description: result.error || 'Nie udało się wygenerować analizy',
+          variant: 'destructive',
+        });
+      }
+    } catch (err: unknown) {
+      toast({
+        title: 'Błąd AI',
+        description: err instanceof Error ? err.message : 'Nie udało się połączyć z AI',
+        variant: 'destructive',
+      });
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -77,8 +109,8 @@ export default function DomainDetailPage() {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-4">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        <p className="text-muted-foreground">Analizuję domenę... (WHOIS, scraping, Google, DNS, AI)</p>
-        <p className="text-xs text-muted-foreground">To może potrwać do 30 sekund przy pierwszym skanowaniu</p>
+        <p className="text-muted-foreground">Analizuję domenę... (WHOIS, scraping, Google, DNS)</p>
+        <p className="text-xs text-muted-foreground">To może potrwać do 15 sekund przy pierwszym skanowaniu</p>
       </div>
     );
   }
@@ -203,7 +235,7 @@ export default function DomainDetailPage() {
       )}
 
       {/* Main Content Tabs */}
-      <Tabs defaultValue="ai" className="space-y-4">
+      <Tabs defaultValue="website" className="space-y-4">
         <TabsList className="flex flex-wrap h-auto gap-1">
           <TabsTrigger value="ai"><Brain className="h-4 w-4 mr-1" /> Analiza AI</TabsTrigger>
           <TabsTrigger value="website"><Globe className="h-4 w-4 mr-1" /> Strona WWW</TabsTrigger>
@@ -224,15 +256,24 @@ export default function DomainDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {details.ai_analysis ? (
+              {aiAnalysis ? (
                 <div className="prose dark:prose-invert max-w-none text-sm whitespace-pre-wrap">
-                  {details.ai_analysis}
+                  {aiAnalysis}
+                </div>
+              ) : aiLoading ? (
+                <div className="flex flex-col items-center py-12 gap-3">
+                  <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                  <p className="text-muted-foreground">AI analizuje domenę...</p>
+                  <p className="text-xs text-muted-foreground">To może potrwać 30-60 sekund</p>
                 </div>
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
-                  <AlertCircle className="h-8 w-8 mx-auto mb-3" />
-                  <p>Analiza AI niedostępna.</p>
-                  <p className="text-xs mt-1">Upewnij się, że Ollama jest uruchomiona na serwerze.</p>
+                  <Brain className="h-8 w-8 mx-auto mb-3 opacity-20" />
+                  <p>Kliknij aby wygenerować analizę AI</p>
+                  <p className="text-xs mt-1 mb-4">Analiza może potrwać do minuty. Reszta danych jest dostępna w pozostałych zakładkach.</p>
+                  <Button onClick={loadAiAnalysis} disabled={aiLoading}>
+                    <Brain className="h-4 w-4 mr-2" /> Analizuj domenę
+                  </Button>
                 </div>
               )}
             </CardContent>
