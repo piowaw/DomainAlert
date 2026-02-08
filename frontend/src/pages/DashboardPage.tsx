@@ -29,7 +29,6 @@ export default function DashboardPage() {
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
   const [testingNtfy, setTestingNtfy] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
-  const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
   const [bulkCheckLoading, setBulkCheckLoading] = useState(false);
   
   // Filter and pagination state
@@ -455,20 +454,6 @@ export default function DashboardPage() {
                     onChange={(e) => setImportText(e.target.value)}
                     className="mt-2 h-32"
                   />
-                  {importProgress && (
-                    <div className="mt-4 space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span>Postęp importu...</span>
-                        <span>{importProgress.current} / {importProgress.total}</span>
-                      </div>
-                      <div className="w-full bg-muted rounded-full h-2">
-                        <div 
-                          className="bg-primary h-2 rounded-full transition-all"
-                          style={{ width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
                 </div>
                 <DialogFooter>
                   <Button type="submit" disabled={importLoading}>
