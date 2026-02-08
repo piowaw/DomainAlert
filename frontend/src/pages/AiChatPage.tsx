@@ -15,6 +15,7 @@ import {
   stopOllama,
   removeOllama,
   getDockerStatus,
+  testOllama,
   type AiConversation,
   type AiMessage,
   type AiStatus,
@@ -50,6 +51,7 @@ import {
   Terminal,
   Container,
   Play,
+  Zap,
 } from 'lucide-react';
 
 export default function AiChatPage() {
@@ -566,6 +568,12 @@ export default function AiChatPage() {
                     <span>{aiStatus.error}</span>
                   </div>
                 )}
+                {aiStatus?.ollama_running && !aiStatus?.model_ready && (
+                  <div className="flex items-center gap-2 text-amber-500 text-sm">
+                    <AlertCircle className="h-4 w-4" />
+                    <span>Model <strong>{aiStatus.model}</strong> nie jest pobrany! Kliknij "Pobierz model".</span>
+                  </div>
+                )}
                 <Button variant="outline" size="sm" onClick={loadStatus}>
                   Odśwież status
                 </Button>
@@ -647,7 +655,7 @@ export default function AiChatPage() {
                 <CardDescription>Uruchamianie, restart i zarządzanie Ollama przez Docker na serwerze</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                   {/* Start/Install Container */}
                   <Button 
                     variant={aiStatus?.ollama_running ? "outline" : "default"}
@@ -727,6 +735,45 @@ export default function AiChatPage() {
                     <span className="text-sm font-medium">Usuń kontener</span>
                     <span className="text-xs font-normal opacity-80">Reinstalacja</span>
                   </Button>
+
+                  {/* Test AI */}
+                  <Button 
+                    variant="secondary"
+                    className="h-auto py-3 flex flex-col items-center gap-1"
+                    disabled={mgmtLoading !== null}
+                    onClick={async () => {
+                      setMgmtLoading('test');
+                      setMgmtOutput(null);
+                      try {
+                        const result = await testOllama();
+                        setMgmtOutput(
+                          result.success 
+                            ? `✅ AI odpowiada poprawnie!\n\nOdpowiedź: ${result.response}` 
+                            : `❌ ${result.error}`
+                        );
+                        toast({ 
+                          title: result.success ? 'AI działa!' : 'Problem z AI', 
+                          description: result.success ? 'Ollama odpowiada poprawnie' : result.error || 'Sprawdź konfigurację',
+                          variant: result.success ? 'default' : 'destructive' 
+                        });
+                        await loadStatus();
+                      } catch (err: unknown) {
+                        const msg = err instanceof Error ? err.message : 'Test nie powiódł się';
+                        setMgmtOutput(`❌ ${msg}`);
+                        toast({ title: 'Błąd', description: msg, variant: 'destructive' });
+                      } finally {
+                        setMgmtLoading(null);
+                      }
+                    }}
+                  >
+                    {mgmtLoading === 'test' ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <Zap className="h-5 w-5" />
+                    )}
+                    <span className="text-sm font-medium">Test AI</span>
+                    <span className="text-xs text-muted-foreground font-normal">Sprawdź połączenie</span>
+                  </Button>
                 </div>
 
                 {/* Output Console */}
@@ -751,6 +798,7 @@ export default function AiChatPage() {
                       {mgmtLoading === 'restart' && 'Restartowanie kontenera...'}
                       {mgmtLoading === 'stop' && 'Zatrzymywanie kontenera...'}
                       {mgmtLoading === 'remove' && 'Usuwanie kontenera...'}
+                      {mgmtLoading === 'test' && 'Testowanie połączenia z AI...'}
                     </span>
                   </div>
                 )}

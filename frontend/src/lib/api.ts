@@ -401,6 +401,7 @@ export interface AiStatus {
   model: string;
   ollama_url: string;
   models_available: string[];
+  model_ready: boolean;
   error: string | null;
 }
 
@@ -537,4 +538,8 @@ export async function removeOllama() {
 
 export async function getDockerStatus() {
   return apiCall<DockerStatus>('ai/docker-status');
+}
+
+export async function testOllama() {
+  return apiCall<{ success: boolean; response: string | null; error: string | null; status: AiStatus }>('ai/test', { method: 'POST' });
 }

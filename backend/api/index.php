@@ -991,7 +991,36 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // AI Status
     if ($action === 'status' && $method === 'GET') {
-        jsonResponse($ai->getStatus());
+        $status = $ai->getStatus();
+        // Check if configured model is actually available
+        $status['model_ready'] = in_array($status['model'], $status['models_available']);
+        jsonResponse($status);
+    }
+    
+    // Test AI connection — actually sends a simple prompt
+    if ($action === 'test' && $method === 'POST') {
+        requireAdmin();
+        $status = $ai->getStatus();
+        
+        if (!$status['ollama_running']) {
+            jsonResponse(['success' => false, 'error' => 'Ollama nie odpowiada na ' . $status['ollama_url'], 'status' => $status]);
+        }
+        
+        if (!in_array($status['model'], $status['models_available'])) {
+            jsonResponse([
+                'success' => false, 
+                'error' => "Model {$status['model']} nie jest pobrany. Dostępne modele: " . implode(', ', $status['models_available'] ?: ['brak']),
+                'status' => $status
+            ]);
+        }
+        
+        $response = $ai->chat('Odpowiedz jednym słowem: OK');
+        jsonResponse([
+            'success' => $response !== null,
+            'response' => $response,
+            'error' => $response === null ? 'Model nie odpowiedział. Sprawdź logi serwera.' : null,
+            'status' => $status
+        ]);
     }
     
     // Conversations list

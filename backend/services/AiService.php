@@ -397,6 +397,7 @@ class AiService {
         curl_close($ch);
         
         if ($error) {
+            error_log("Ollama curl error: {$error}");
             return null;
         }
         
@@ -405,6 +406,7 @@ class AiService {
             return $responseData['message']['content'] ?? null;
         }
         
+        error_log("Ollama HTTP {$httpCode}: {$response}");
         return null;
     }
     
