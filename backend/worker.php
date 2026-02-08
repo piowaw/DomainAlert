@@ -16,10 +16,10 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/services/WhoisService.php';
 
 // Configuration
-define('BATCH_SIZE', 20);           // Domains per batch
-define('SLEEP_BETWEEN_JOBS', 2);    // Seconds between jobs
-define('SLEEP_NO_JOBS', 30);        // Seconds when no jobs found
-define('RATE_LIMIT_DELAY', 1);      // Seconds between WHOIS requests (to avoid rate limiting)
+define('BATCH_SIZE', 100);          // Domains per batch (increased from 20)
+define('SLEEP_BETWEEN_JOBS', 1);    // Seconds between jobs
+define('SLEEP_NO_JOBS', 10);        // Seconds when no jobs found
+define('RATE_LIMIT_DELAY', 0.2);    // Seconds between WHOIS requests (200ms)
 
 $daemonMode = isset($argv[1]) && $argv[1] === 'daemon';
 
