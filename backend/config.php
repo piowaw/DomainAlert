@@ -73,7 +73,10 @@ function initDatabase(): PDO {
             sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (domain_id) REFERENCES domains(id)
         );
-        
+    ");
+    
+    // Jobs table (separate exec to ensure creation on existing databases)
+    $db->exec("
         CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
