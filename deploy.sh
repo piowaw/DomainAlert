@@ -5,7 +5,7 @@
 set -e
 
 # Configuration
-DEPLOY_DIR="/var/www/vhosts/yourdomain.com/httpdocs"
+DEPLOY_DIR="/var/www/vhosts/domainalert.piowaw.com/httpdocs"
 REPO_URL="https://github.com/piowaw/DomainAlert.git"
 BRANCH="main"
 
