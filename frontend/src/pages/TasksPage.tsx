@@ -50,10 +50,10 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // 10 parallel workers — SQLite serializes writes, so more workers = more lock contention
-  // 10 × 50 × 20 = 10,000 simultaneous RDAP connections (still fast, no DB locks)
-  const NUM_WORKERS = 10;
-  const BATCH_SIZE = 50;
+  // 6 parallel workers × 100 batch × 30 concurrent RDAP = 18,000 simultaneous lookups
+  // Fewer workers = less SQLite write contention, bigger batches = more work per lock
+  const NUM_WORKERS = 6;
+  const BATCH_SIZE = 100;
   
   useEffect(() => {
     const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'processing');
@@ -63,9 +63,11 @@ export default function TasksPage() {
     
     // Worker: loops continuously, updates live counter on every response
     async function worker(jobId: number) {
+      let consecutiveErrors = 0;
       while (!cancelled) {
         try {
           const result = await processJob(jobId, BATCH_SIZE);
+          consecutiveErrors = 0; // reset on success
           // Update live counter immediately (no waiting for poll)
           setLiveProgress(prev => ({
             ...prev,
@@ -78,16 +80,18 @@ export default function TasksPage() {
           if (result.job.status === 'completed' || (result as Record<string, unknown>).message === 'completed') {
             break;
           }
-          if ((result as Record<string, unknown>).message === 'batch claimed by another worker') {
-            await new Promise(r => setTimeout(r, 50));
-          }
         } catch {
-          await new Promise(r => setTimeout(r, 300));
+          consecutiveErrors++;
+          // Exponential backoff: 500ms, 1s, 2s, 4s, max 8s
+          const delay = Math.min(500 * Math.pow(2, consecutiveErrors - 1), 8000);
+          await new Promise(r => setTimeout(r, delay));
+          // Give up after 20 consecutive errors
+          if (consecutiveErrors >= 20) break;
         }
       }
     }
     
-    // Launch 100 workers per active job
+    // Launch workers per active job
     const allWorkers: Promise<void>[] = [];
     for (const job of activeJobs) {
       for (let i = 0; i < NUM_WORKERS; i++) {
