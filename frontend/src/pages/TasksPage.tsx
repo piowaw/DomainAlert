@@ -4,8 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getJobs, deleteJob, processJob, type Job } from '@/lib/api';
-import { Loader2, Trash2, CheckCircle, XCircle, Clock, RefreshCw, Cog } from 'lucide-react';
+import { getJobs, deleteJob, processJob, resumeJob, type Job } from '@/lib/api';
+import { Loader2, Trash2, CheckCircle, XCircle, Clock, RefreshCw, Cog, Play } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -50,19 +50,20 @@ export default function TasksPage() {
     let cancelled = false;
     const kickedOff = new Set<number>();
     
-    // Fire-and-forget: kick off processing for pending jobs (backend handles ALL domains)
+    // Fire-and-forget: kick off processing for pending AND stale processing jobs
+    // Backend handles stale detection (>2min since last update = dead process)
     for (const job of activeJobs) {
-      if (job.status === 'pending' && !kickedOff.has(job.id)) {
+      if (!kickedOff.has(job.id)) {
         kickedOff.add(job.id);
         processJob(job.id).catch(() => {}); // fire and forget
       }
     }
     
-    // Poll for status updates independently (backend updates progress every ~500 domains)
+    // Poll for status updates independently
     const interval = setInterval(async () => {
       if (cancelled) return;
       await loadJobs();
-    }, 2000);
+    }, 3000);
     
     return () => { cancelled = true; clearInterval(interval); };
   }, [jobs.filter(j => j.status === 'pending' || j.status === 'processing').map(j => j.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -79,6 +80,23 @@ export default function TasksPage() {
       toast({
         title: 'Błąd',
         description: err instanceof Error ? err.message : 'Nie udało się usunąć zadania',
+        variant: 'destructive',
+      });
+    }
+  }
+  
+  async function handleResume(id: number) {
+    try {
+      const result = await resumeJob(id);
+      toast({
+        title: 'Wznowiono',
+        description: result.message || 'Zadanie zostanie wznowione',
+      });
+      await loadJobs();
+    } catch (err) {
+      toast({
+        title: 'Błąd',
+        description: err instanceof Error ? err.message : 'Nie udało się wznowić zadania',
         variant: 'destructive',
       });
     }
@@ -181,7 +199,9 @@ export default function TasksPage() {
                   {/* Active job info */}
                   {isActive && (
                     <p className="text-sm text-muted-foreground">
-                      Zadanie jest przetwarzane w tle na serwerze...
+                      {job.status === 'processing' && job.processed < job.total
+                        ? `Przetwarzanie... (${job.processed}/${job.total})`
+                        : 'Zadanie jest przetwarzane w tle na serwerze...'}
                     </p>
                   )}
                   
@@ -204,6 +224,18 @@ export default function TasksPage() {
                   
                   {/* Actions */}
                   <div className="flex gap-2">
+                    {job.status === 'processing' && job.processed < job.total && (
+                      <Button size="sm" variant="outline" onClick={() => handleResume(job.id)}>
+                        <Play className="h-4 w-4 mr-2" />
+                        Wznów
+                      </Button>
+                    )}
+                    {job.status === 'failed' && (
+                      <Button size="sm" variant="outline" onClick={() => handleResume(job.id)}>
+                        <Play className="h-4 w-4 mr-2" />
+                        Ponów
+                      </Button>
+                    )}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button size="sm" variant="destructive">

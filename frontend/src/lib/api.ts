@@ -327,6 +327,13 @@ export async function processJob(jobId: number) {
   });
 }
 
+export async function resumeJob(jobId: number) {
+  return apiCall<{ job: Job; message: string }>('jobs/resume', {
+    method: 'POST',
+    body: { job_id: jobId },
+  });
+}
+
 export async function deleteJob(id: number) {
   return apiCall<{ success: boolean }>(`jobs/${id}`, {
     method: 'DELETE',

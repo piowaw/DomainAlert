@@ -776,25 +776,36 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
             jsonResponse(['job' => $job, 'message' => 'Job already completed']);
         }
         
-        // If already processing (another request is handling it), just return status
+        // If already processing, check if the previous process is still alive
+        // If updated_at is >2 minutes old, the process crashed/timed out — resume it
         if ($job['status'] === 'processing') {
-            jsonResponse(['job' => $job, 'message' => 'Already processing']);
+            $lastUpdate = strtotime($job['updated_at'] ?? '2000-01-01');
+            $staleSeconds = time() - $lastUpdate;
+            if ($staleSeconds < 120) {
+                // Still actively processing (updated recently), don't interfere
+                jsonResponse(['job' => $job, 'message' => 'Already processing']);
+            }
+            // Stale — previous process died, resume from where it left off
         }
         
-        // Mark as processing
+        // Mark as processing with fresh timestamp
         $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
         
-        // Flush response headers so frontend isn't blocked — we continue processing
-        // (PHP built-in server doesn't support this well, but we'll return at the end anyway)
+        // Extend PHP execution time for large jobs (Plesk may limit this)
+        @set_time_limit(600); // 10 minutes
+        @ini_set('max_execution_time', '600');
         
-        $rdap = new RdapEngine(200); // 200 concurrent RDAP requests rolling window
+        // Concurrency: 50 for shared hosting safety, 200 for dedicated/local
+        $maxConcurrency = (int)($input['concurrency'] ?? 50);
+        $rdap = new RdapEngine($maxConcurrency);
         $jobDataDecoded = json_decode($job['data'], true);
         $processed = (int)$job['processed'];
         $errors = (int)$job['errors'];
         $total = (int)$job['total'];
         
-        // Internal chunk size for DB progress updates (RDAP still runs 200 concurrent)
-        $PROGRESS_CHUNK = 500;
+        // Process in chunks of 200 — each chunk updates DB progress
+        // If PHP times out mid-job, the next call resumes from $processed
+        $PROGRESS_CHUNK = 200;
         
         // Helper to update job progress in DB
         $updateProgress = function() use ($db, $jobId, &$processed, &$errors, $total) {
@@ -938,6 +949,31 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         $job = $stmt->fetch(PDO::FETCH_ASSOC);
         
         jsonResponse(['job' => $job]);
+    }
+    
+    // Resume a stuck job — resets 'processing' back to 'pending' so it can be re-triggered
+    if ($action === 'resume' && $method === 'POST') {
+        $jobId = $input['job_id'] ?? 0;
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+        $stmt->execute([$jobId]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$job) {
+            jsonResponse(['error' => 'Job not found'], 404);
+        }
+        
+        if ($job['status'] === 'completed') {
+            jsonResponse(['job' => $job, 'message' => 'Job already completed']);
+        }
+        
+        // Reset to pending so the frontend can kick it off again
+        $db->prepare("UPDATE jobs SET status = 'pending', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
+        
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+        $stmt->execute([$jobId]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        jsonResponse(['job' => $job, 'message' => 'Job reset to pending, will resume from ' . $job['processed'] . '/' . $job['total']]);
     }
     
     // Delete job
