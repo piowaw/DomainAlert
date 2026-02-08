@@ -377,7 +377,7 @@ class AiService {
             'stream' => false,
             'options' => [
                 'temperature' => 0.7,
-                'num_predict' => 2048,
+                'num_predict' => 1024,
             ],
         ];
         
@@ -387,7 +387,7 @@ class AiService {
             CURLOPT_POST => true,
             CURLOPT_POSTFIELDS => json_encode($data),
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-            CURLOPT_TIMEOUT => 120, // AI can take long
+            CURLOPT_TIMEOUT => 300, // AI can take long on CPU
             CURLOPT_CONNECTTIMEOUT => 10,
         ]);
         

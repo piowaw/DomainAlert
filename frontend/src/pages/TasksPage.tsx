@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -75,10 +75,10 @@ export default function TasksPage() {
               status: result.job.status,
             }
           }));
-          if (result.job.status === 'completed' || result.message === 'completed') {
+          if (result.job.status === 'completed' || (result as Record<string, unknown>).message === 'completed') {
             break;
           }
-          if (result.message === 'batch claimed by another worker') {
+          if ((result as Record<string, unknown>).message === 'batch claimed by another worker') {
             await new Promise(r => setTimeout(r, 50));
           }
         } catch {
@@ -195,7 +195,6 @@ export default function TasksPage() {
             const currentErrors = live ? live.errors : job.errors;
             const currentStatus = live ? live.status : job.status;
             const progress = job.total > 0 ? (currentProcessed / job.total) * 100 : 0;
-            const isActive = currentStatus === 'pending' || currentStatus === 'processing';
             
             return (
               <Card key={job.id}>

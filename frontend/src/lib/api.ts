@@ -3,6 +3,7 @@ const API_BASE = '/api';
 interface ApiOptions {
   method?: string;
   body?: object;
+  timeoutMs?: number;
 }
 
 async function apiCall<T>(endpoint: string, options: ApiOptions = {}): Promise<T> {
@@ -15,12 +16,46 @@ async function apiCall<T>(endpoint: string, options: ApiOptions = {}): Promise<T
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+
+  // Abort controller for timeout
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs || 60000; // default 60s
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   
-  const response = await fetch(`${API_BASE}/${endpoint}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/${endpoint}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    clearTimeout(timeoutId);
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Przekroczono czas oczekiwania na odpowiedź serwera. AI może potrzebować więcej czasu — spróbuj ponownie.');
+    }
+    throw new Error('Nie udało się połączyć z serwerem. Sprawdź połączenie.');
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  // Handle non-JSON responses (server error pages, timeouts returning HTML)
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const text = await response.text().catch(() => '');
+    if (text.includes('<!DOCTYPE') || text.includes('<html')) {
+      throw new Error(`Serwer zwrócił błąd (HTTP ${response.status}). Prawdopodobnie przekroczono limit czasu — spróbuj ponownie.`);
+    }
+    // Try parsing as JSON anyway (some servers don't set content-type)
+    try {
+      const data = JSON.parse(text);
+      if (!response.ok) throw new Error(data.error || `Błąd serwera (HTTP ${response.status})`);
+      return data;
+    } catch {
+      throw new Error(`Nieoczekiwana odpowiedź serwera (HTTP ${response.status})`);
+    }
+  }
   
   const data = await response.json();
   
@@ -398,6 +433,7 @@ export async function getDomainDetails(id: number, refresh = false) {
 export async function getDomainAiAnalysis(domainId: number) {
   return apiCall<{ ai_analysis: string | null; error: string | null }>(`ai/analyze/${domainId}`, {
     method: 'POST',
+    timeoutMs: 360000, // 6 min — AI needs time
   });
 }
 
@@ -453,6 +489,7 @@ export async function sendMessage(conversationId: number, message: string) {
   return apiCall<{ message: AiMessage }>(`ai/conversations/${conversationId}`, {
     method: 'POST',
     body: { message },
+    timeoutMs: 360000, // 6 min — AI needs time
   });
 }
 
@@ -495,6 +532,7 @@ export async function quickAiChat(message: string) {
   return apiCall<{ response: string }>('ai/chat', {
     method: 'POST',
     body: { message },
+    timeoutMs: 360000, // 6 min — AI needs time
   });
 }
 
@@ -527,6 +565,7 @@ export async function pullModel(model?: string) {
   return apiCall<AiManagementResult>('ai/pull-model', {
     method: 'POST',
     body: model ? { model } : {},
+    timeoutMs: 900000, // 15 min — model download
   });
 }
 
@@ -547,5 +586,5 @@ export async function getDockerStatus() {
 }
 
 export async function testOllama() {
-  return apiCall<{ success: boolean; response: string | null; error: string | null; status: AiStatus }>('ai/test', { method: 'POST' });
+  return apiCall<{ success: boolean; response: string | null; error: string | null; status: AiStatus }>('ai/test', { method: 'POST', timeoutMs: 180000 });
 }

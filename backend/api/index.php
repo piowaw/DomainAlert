@@ -1,5 +1,35 @@
 <?php
 
+// Global error handling — NEVER return HTML, always JSON
+set_error_handler(function($severity, $message, $file, $line) {
+    throw new ErrorException($message, 0, $severity, $file, $line);
+});
+
+register_shutdown_function(function() {
+    $error = error_get_last();
+    if ($error && in_array($error['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR, E_PARSE])) {
+        // Clean any partial output
+        if (ob_get_level()) ob_end_clean();
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'error' => 'Wewnętrzny błąd serwera: ' . $error['message'],
+            'type' => 'fatal',
+        ]);
+    }
+});
+
+set_exception_handler(function(Throwable $e) {
+    if (ob_get_level()) ob_end_clean();
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'error' => 'Błąd serwera: ' . $e->getMessage(),
+        'type' => 'exception',
+    ]);
+    error_log("Uncaught exception in API: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
+});
+
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../services/WhoisService.php';
 require_once __DIR__ . '/../services/NotificationService.php';
@@ -42,6 +72,12 @@ $ai = new AiService($db);
 // Router
 $requestUri = $_SERVER['REQUEST_URI'];
 $method = $_SERVER['REQUEST_METHOD'];
+
+// Ensure JSON content type for all API responses
+header('Content-Type: application/json; charset=utf-8');
+
+// Disable output buffering that might cause partial HTML output
+if (ob_get_level()) ob_end_clean();
 
 // Parse path
 $path = parse_url($requestUri, PHP_URL_PATH);
@@ -965,7 +1001,16 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // Analyze domain with AI (async endpoint)
     if ($action === 'analyze' && is_numeric($subAction) && $method === 'POST') {
-        set_time_limit(300);
+        set_time_limit(600);
+        
+        // Check AI availability first
+        $status = $ai->getStatus();
+        if (!$status['ollama_running']) {
+            jsonResponse(['ai_analysis' => null, 'error' => 'Ollama nie jest uruchomiona. Uruchom kontener w zakładce Status.'], 503);
+        }
+        if (!in_array($status['model'], $status['models_available'])) {
+            jsonResponse(['ai_analysis' => null, 'error' => "Model {$status['model']} nie jest pobrany. Pobierz go w zakładce Status."], 503);
+        }
         
         $domainId = (int)$subAction;
         $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
@@ -998,7 +1043,7 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // Test AI connection — actually sends a simple prompt
     if ($action === 'test' && $method === 'POST') {
-        set_time_limit(120);
+        set_time_limit(300);
         requireAdmin();
         $status = $ai->getStatus();
         
@@ -1050,10 +1095,16 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // Send message to conversation
     if ($action === 'conversations' && is_numeric($subAction) && $method === 'POST') {
-        set_time_limit(300);
+        set_time_limit(600);
         $message = $input['message'] ?? '';
         if (empty($message)) {
             jsonResponse(['error' => 'Message is required'], 400);
+        }
+        
+        // Check AI availability first
+        $status = $ai->getStatus();
+        if (!$status['ollama_running']) {
+            jsonResponse(['error' => 'Ollama nie jest uruchomiona. Uruchom kontener w zakładce Status.'], 503);
         }
         
         $response = $ai->continueConversation((int)$subAction, $message, $user['id']);
@@ -1099,14 +1150,26 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     
     // Quick chat (no conversation)
     if ($action === 'chat' && $method === 'POST') {
-        set_time_limit(300);
+        set_time_limit(600);
         $message = $input['message'] ?? '';
         if (empty($message)) {
             jsonResponse(['error' => 'Message is required'], 400);
         }
         
+        // Check AI availability first
+        $status = $ai->getStatus();
+        if (!$status['ollama_running']) {
+            jsonResponse(['error' => 'Ollama nie jest uruchomiona. Uruchom kontener w zakładce Status.'], 503);
+        }
+        if (!in_array($status['model'], $status['models_available'])) {
+            jsonResponse(['error' => "Model {$status['model']} nie jest pobrany. Pobierz go w zakładce Status."], 503);
+        }
+        
         $response = $ai->chat($message);
-        jsonResponse(['response' => $response ?? 'Ollama nie jest dostępna. Sprawdź czy serwer jest uruchomiony.']);
+        if ($response === null) {
+            jsonResponse(['error' => 'AI nie odpowiedziała w czasie. Model może być przeciążony — spróbuj ponownie.'], 504);
+        }
+        jsonResponse(['response' => $response]);
     }
     
     // ====== AI Environment Management via Docker (admin only) ======
