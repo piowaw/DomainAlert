@@ -230,7 +230,7 @@ export interface Job {
   id: number;
   user_id: number;
   type: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'processing' | 'completed' | 'failed';
   total: number;
   processed: number;
   errors: number;
@@ -297,14 +297,16 @@ export async function createJob(type: string, data: object) {
   });
 }
 
-export async function getJobStatus(id: number) {
-  return apiCall<{ job: Job }>(`jobs/${id}`);
+export async function createBulkWhoisCheckJob(checkAll: boolean = true, domainIds?: number[]) {
+  return createJob('whois_check', { check_all: checkAll, domain_ids: domainIds });
 }
 
-export async function processJob(id: number) {
-  return apiCall<{ job: Job; processed: number }>(`jobs/${id}/process`, {
-    method: 'POST',
-  });
+export async function createImportJob(domains: string[]) {
+  return createJob('import', { domains });
+}
+
+export async function getJobStatus(id: number) {
+  return apiCall<{ job: Job }>(`jobs/${id}`);
 }
 
 export async function deleteJob(id: number) {

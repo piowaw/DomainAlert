@@ -73,6 +73,21 @@ function initDatabase(): PDO {
             sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (domain_id) REFERENCES domains(id)
         );
+        
+        CREATE TABLE IF NOT EXISTS jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            total INTEGER DEFAULT 0,
+            processed INTEGER DEFAULT 0,
+            errors INTEGER DEFAULT 0,
+            data TEXT,
+            result TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
     ");
     
     // Create default admin if not exists

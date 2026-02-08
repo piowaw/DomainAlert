@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { getDomainsFiltered, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, type Domain, type DomainFilters } from '@/lib/api';
+import { useNavigate } from 'react-router-dom';
+import { getDomainsFiltered, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, createBulkWhoisCheckJob, type Domain, type DomainFilters } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,9 +10,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Plus, Upload, RefreshCw, Trash2, Bell, ExternalLink, Loader2, Search, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Upload, RefreshCw, Trash2, Bell, ExternalLink, Loader2, Search, ChevronLeft, ChevronRight, ListTodo } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 export default function DashboardPage() {
+  const { toast } = useToast();
+  const navigate = useNavigate();
   const [domains, setDomains] = useState<Domain[]>([]);
   const [loading, setLoading] = useState(true);
   const [newDomain, setNewDomain] = useState('');
@@ -26,6 +30,7 @@ export default function DashboardPage() {
   const [testingNtfy, setTestingNtfy] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
   const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
+  const [bulkCheckLoading, setBulkCheckLoading] = useState(false);
   
   // Filter and pagination state
   const [searchQuery, setSearchQuery] = useState('');
@@ -182,6 +187,35 @@ export default function DashboardPage() {
       await loadStats();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete domain');
+    }
+  };
+
+  const handleBulkCheck = async () => {
+    if (totalDomains === 0) {
+      toast({
+        title: 'Brak domen',
+        description: 'Najpierw dodaj domeny do monitorowania',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setBulkCheckLoading(true);
+    try {
+      await createBulkWhoisCheckJob(true);
+      toast({
+        title: 'Zadanie utworzone',
+        description: `Sprawdzanie ${totalDomains} domen zostało dodane do kolejki. Przejdź do Zadań, aby śledzić postęp.`,
+      });
+      navigate('/tasks');
+    } catch (err) {
+      toast({
+        title: 'Błąd',
+        description: err instanceof Error ? err.message : 'Nie udało się utworzyć zadania',
+        variant: 'destructive',
+      });
+    } finally {
+      setBulkCheckLoading(false);
     }
   };
 
@@ -457,6 +491,19 @@ export default function DashboardPage() {
               </form>
             </DialogContent>
           </Dialog>
+
+          <Button 
+            variant="secondary" 
+            onClick={handleBulkCheck}
+            disabled={bulkCheckLoading || totalDomains === 0}
+          >
+            {bulkCheckLoading ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <ListTodo className="h-4 w-4 mr-2" />
+            )}
+            Sprawdź wszystkie
+          </Button>
 
           <Button variant="outline" onClick={loadDomains}>
             <RefreshCw className="h-4 w-4 mr-2" />

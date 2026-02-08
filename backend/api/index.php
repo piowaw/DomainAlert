@@ -579,23 +579,43 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         jsonResponse(['jobs' => $jobs]);
     }
     
-    // Create new job (background import)
+    // Create new job (background import or whois check)
     if ($action === '' && $method === 'POST') {
         $type = $input['type'] ?? '';
         $data = $input['data'] ?? [];
         
-        if ($type !== 'import') {
-            jsonResponse(['error' => 'Invalid job type'], 400);
+        if (!in_array($type, ['import', 'whois_check'])) {
+            jsonResponse(['error' => 'Invalid job type. Allowed: import, whois_check'], 400);
         }
         
-        $domains = $data['domains'] ?? [];
-        if (empty($domains)) {
-            jsonResponse(['error' => 'No domains provided'], 400);
+        if ($type === 'import') {
+            $domains = $data['domains'] ?? [];
+            if (empty($domains)) {
+                jsonResponse(['error' => 'No domains provided'], 400);
+            }
+            $total = count($domains);
+            $jobData = json_encode($domains);
+        } else if ($type === 'whois_check') {
+            $domainIds = $data['domain_ids'] ?? [];
+            $checkAll = $data['check_all'] ?? false;
+            
+            // If check_all, get all domain IDs for this user
+            if ($checkAll) {
+                $stmt = $db->prepare("SELECT id FROM domains WHERE added_by = ?");
+                $stmt->execute([$user['id']]);
+                $domainIds = array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'id');
+            }
+            
+            if (empty($domainIds)) {
+                jsonResponse(['error' => 'No domains to check'], 400);
+            }
+            $total = count($domainIds);
+            $jobData = json_encode(['domain_ids' => $domainIds]);
         }
         
         // Create job record
         $stmt = $db->prepare("INSERT INTO jobs (user_id, type, status, total, data) VALUES (?, ?, 'pending', ?, ?)");
-        $stmt->execute([$user['id'], $type, count($domains), json_encode($domains)]);
+        $stmt->execute([$user['id'], $type, $total, $jobData]);
         $jobId = $db->lastInsertId();
         
         jsonResponse(['job' => [

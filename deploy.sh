@@ -68,10 +68,18 @@ fi
 chmod 600 config.php 2>/dev/null || true
 chmod 600 database.sqlite 2>/dev/null || true
 
+# Run database migrations
+echo "Running database migrations..."
+if [ -f "migrate.php" ]; then
+    php migrate.php
+fi
+
 echo ""
 echo "=== Deploy Complete ==="
 echo ""
 echo "Post-deploy steps:"
 echo "1. Edit config.php with your settings"
-echo "2. Set up cron job in Plesk"
+echo "2. Set up cron jobs in Plesk:"
+echo "   - Daily WHOIS check: 0 3 * * * php /path/to/cron/check_domains.php"
+echo "   - Background worker: * * * * * php /path/to/worker.php >> /var/log/domainalert-worker.log 2>&1"
 echo "3. Subscribe to ntfy topic"

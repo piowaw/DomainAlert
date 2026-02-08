@@ -4,8 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getJobs, processJob, deleteJob, type Job } from '@/lib/api';
-import { Loader2, Play, Trash2, CheckCircle, XCircle, Clock, RefreshCw } from 'lucide-react';
+import { getJobs, deleteJob, type Job } from '@/lib/api';
+import { Loader2, Trash2, CheckCircle, XCircle, Clock, RefreshCw, Cog } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,7 +22,6 @@ export default function TasksPage() {
   const { toast } = useToast();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
-  const [processingJobs, setProcessingJobs] = useState<Set<number>>(new Set());
   
   const loadJobs = useCallback(async () => {
     try {
@@ -43,59 +42,17 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // Auto-refresh every 5 seconds if there are running jobs
+  // Auto-refresh every 5 seconds if there are running/pending jobs
   useEffect(() => {
+    const hasActiveJobs = jobs.some(j => j.status === 'pending' || j.status === 'processing');
+    if (!hasActiveJobs) return;
+    
     const interval = setInterval(() => {
-      if (jobs.some(j => j.status === 'pending' || j.status === 'running')) {
-        loadJobs();
-      }
+      loadJobs();
     }, 5000);
     
     return () => clearInterval(interval);
-  }, [jobs.length]);
-  
-  async function handleProcess(job: Job) {
-    if (processingJobs.has(job.id)) return;
-    
-    setProcessingJobs(prev => new Set(prev).add(job.id));
-    
-    try {
-      // Process in batches until completed
-      let currentJob = job;
-      while (currentJob.status === 'pending' || currentJob.status === 'running') {
-        const result = await processJob(job.id);
-        currentJob = result.job;
-        
-        // Update job in list
-        setJobs(prev => prev.map(j => j.id === job.id ? currentJob : j));
-        
-        if (currentJob.status === 'completed' || currentJob.status === 'failed') {
-          break;
-        }
-        
-        // Small delay between batches
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
-      
-      toast({
-        title: 'Sukces',
-        description: `Zadanie zakończone: ${currentJob.processed} przetworzonych`,
-      });
-    } catch (err) {
-      toast({
-        title: 'Błąd',
-        description: err instanceof Error ? err.message : 'Błąd przetwarzania',
-        variant: 'destructive',
-      });
-    } finally {
-      setProcessingJobs(prev => {
-        const next = new Set(prev);
-        next.delete(job.id);
-        return next;
-      });
-      loadJobs();
-    }
-  }
+  }, [jobs, loadJobs]);
   
   async function handleDelete(id: number) {
     try {
@@ -118,12 +75,14 @@ export default function TasksPage() {
     switch (status) {
       case 'pending':
         return <Badge variant="secondary"><Clock className="h-3 w-3 mr-1" /> Oczekuje</Badge>;
-      case 'running':
-        return <Badge variant="default"><Loader2 className="h-3 w-3 mr-1 animate-spin" /> W trakcie</Badge>;
+      case 'processing':
+        return <Badge variant="default"><Cog className="h-3 w-3 mr-1 animate-spin" /> Przetwarzanie</Badge>;
       case 'completed':
         return <Badge variant="default" className="bg-green-600"><CheckCircle className="h-3 w-3 mr-1" /> Zakończone</Badge>;
       case 'failed':
         return <Badge variant="destructive"><XCircle className="h-3 w-3 mr-1" /> Błąd</Badge>;
+      default:
+        return <Badge variant="secondary">{status}</Badge>;
     }
   }
   
@@ -179,7 +138,7 @@ export default function TasksPage() {
         <div className="space-y-4">
           {jobs.map(job => {
             const progress = job.total > 0 ? (job.processed / job.total) * 100 : 0;
-            const isProcessing = processingJobs.has(job.id);
+            const isActive = job.status === 'pending' || job.status === 'processing';
             
             return (
               <Card key={job.id}>
@@ -206,6 +165,13 @@ export default function TasksPage() {
                     <Progress value={progress} className="h-2" />
                   </div>
                   
+                  {/* Active job info */}
+                  {isActive && (
+                    <p className="text-sm text-muted-foreground">
+                      Zadanie jest przetwarzane w tle na serwerze...
+                    </p>
+                  )}
+                  
                   {/* Error count */}
                   {job.errors > 0 && (
                     <p className="text-sm text-red-500">
@@ -225,21 +191,6 @@ export default function TasksPage() {
                   
                   {/* Actions */}
                   <div className="flex gap-2">
-                    {(job.status === 'pending' || job.status === 'running') && (
-                      <Button
-                        size="sm"
-                        onClick={() => handleProcess(job)}
-                        disabled={isProcessing}
-                      >
-                        {isProcessing ? (
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        ) : (
-                          <Play className="h-4 w-4 mr-2" />
-                        )}
-                        {isProcessing ? 'Przetwarzanie...' : 'Kontynuuj'}
-                      </Button>
-                    )}
-                    
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button size="sm" variant="destructive">
