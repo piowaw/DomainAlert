@@ -1002,11 +1002,24 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
 function handleAi(string $action, string $subAction, PDO $db, AiService $ai, array $input, string $method): void {
     $user = requireAuth();
     
+    // Helper: check if model is available (fuzzy match — handles tag variations)
+    $isModelAvailable = function(string $model, array $available): bool {
+        // Exact match
+        if (in_array($model, $available)) return true;
+        // Check if requested model name is a prefix (e.g. "llama3.1:8b" matches "llama3.1:8b-instruct-q4_0")
+        $baseName = explode(':', $model)[0]; // e.g. "llama3.1"
+        foreach ($available as $m) {
+            if (str_starts_with($m, $model)) return true;
+            if (str_starts_with($m, $baseName . ':')) return true;
+        }
+        return false;
+    };
+    
     // AI Status
     if ($action === 'status' && $method === 'GET') {
         $status = $ai->getStatus();
         // Check if configured model is actually available
-        $status['model_ready'] = in_array($status['model'], $status['models_available']);
+        $status['model_ready'] = $isModelAvailable($status['model'], $status['models_available']);
         jsonResponse($status);
     }
     
@@ -1019,8 +1032,8 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
         if (!$status['ollama_running']) {
             jsonResponse(['ai_analysis' => null, 'error' => 'Ollama nie jest uruchomiona. Uruchom kontener w zakładce Status.'], 503);
         }
-        if (!in_array($status['model'], $status['models_available'])) {
-            jsonResponse(['ai_analysis' => null, 'error' => "Model {$status['model']} nie jest pobrany. Pobierz go w zakładce Status."], 503);
+        if (!$isModelAvailable($status['model'], $status['models_available'])) {
+            jsonResponse(['ai_analysis' => null, 'error' => "Model {$status['model']} nie jest pobrany. Dostępne: " . implode(', ', $status['models_available'] ?: ['brak'])], 503);
         }
         
         $domainId = (int)$subAction;
@@ -1062,7 +1075,7 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
             jsonResponse(['success' => false, 'error' => 'Ollama nie odpowiada na ' . $status['ollama_url'], 'status' => $status]);
         }
         
-        if (!in_array($status['model'], $status['models_available'])) {
+        if (!$isModelAvailable($status['model'], $status['models_available'])) {
             jsonResponse([
                 'success' => false, 
                 'error' => "Model {$status['model']} nie jest pobrany. Dostępne modele: " . implode(', ', $status['models_available'] ?: ['brak']),
@@ -1172,8 +1185,8 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
         if (!$status['ollama_running']) {
             jsonResponse(['error' => 'Ollama nie jest uruchomiona. Uruchom kontener w zakładce Status.'], 503);
         }
-        if (!in_array($status['model'], $status['models_available'])) {
-            jsonResponse(['error' => "Model {$status['model']} nie jest pobrany. Pobierz go w zakładce Status."], 503);
+        if (!$isModelAvailable($status['model'], $status['models_available'])) {
+            jsonResponse(['error' => "Model {$status['model']} nie jest pobrany. Dostępne: " . implode(', ', $status['models_available'] ?: ['brak'])], 503);
         }
         
         $response = $ai->chat($message);
