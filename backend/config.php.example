@@ -4,7 +4,7 @@ define('DB_PATH', __DIR__ . '/database.sqlite');
 
 // NTFY configuration - zmień NTFY_TOPIC na swój własny temat!
 define('NTFY_SERVER', 'https://ntfy.sh');
-define('NTFY_TOPIC', 'domainalert-' . substr(md5(__DIR__), 0, 8));
+define('NTFY_TOPIC', 'domainalert-demo'); // ZMIEŃ NA SWÓJ UNIKALNY TEMAT
 
 // SMTP configuration (for email notifications)
 // Odkomentuj i wypełnij aby włączyć powiadomienia email
@@ -16,7 +16,7 @@ define('NTFY_TOPIC', 'domainalert-' . substr(md5(__DIR__), 0, 8));
 // define('SMTP_FROM_NAME', 'DomainAlert');
 
 // JWT configuration - ZMIEŃ TO NA PRODUKCJI!
-define('JWT_SECRET', 'change-this-to-a-secure-random-string-' . md5(__DIR__));
+define('JWT_SECRET', 'ZMIEN-TO-NA-BARDZO-DLUGI-LOSOWY-CIAG-ZNAKOW');
 define('JWT_EXPIRY', 86400 * 7); // 7 days
 
 // CORS headers
