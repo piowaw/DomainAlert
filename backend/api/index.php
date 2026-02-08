@@ -5,6 +5,7 @@ require_once __DIR__ . '/../services/WhoisService.php';
 require_once __DIR__ . '/../services/NotificationService.php';
 require_once __DIR__ . '/../services/ScraperService.php';
 require_once __DIR__ . '/../services/AiService.php';
+require_once __DIR__ . '/../services/RdapEngine.php';
 
 $db = initDatabase();
 
@@ -757,10 +758,10 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         jsonResponse(['job' => $job]);
     }
     
-    // Process a batch of a pending job
+    // Process a batch of a pending job — parallel RDAP via RdapEngine
     if ($action === 'process' && $method === 'POST') {
         $jobId = $input['job_id'] ?? 0;
-        $batchSize = min(50, max(1, $input['batch_size'] ?? 10));
+        $batchSize = min(2000, max(1, $input['batch_size'] ?? 500));
         
         $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
         $stmt->execute([$jobId]);
@@ -774,84 +775,127 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
             jsonResponse(['job' => $job, 'message' => 'Job already completed']);
         }
         
+        // Mark as processing
+        $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
+        
+        $rdap = new RdapEngine(200); // 200 concurrent RDAP requests
         $jobDataDecoded = json_decode($job['data'], true);
         $processed = (int)$job['processed'];
         $errors = (int)$job['errors'];
         $total = (int)$job['total'];
         
         if ($job['type'] === 'import') {
-            // Import job: data is an array of domain names
             $domainList = $jobDataDecoded;
             $batch = array_slice($domainList, $processed, $batchSize);
             
-            foreach ($batch as $domainName) {
-                try {
-                    $domainName = strtolower(trim($domainName));
-                    $domainName = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $domainName);
-                    $domainName = rtrim($domainName, '/');
-                    
-                    if (empty($domainName)) {
-                        $errors++;
-                        $processed++;
-                        continue;
-                    }
-                    
-                    $whoisData = $whois->lookup($domainName);
-                    
-                    $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
-                    $stmt->execute([
-                        $domainName,
-                        $whoisData['expiry_date'],
-                        $whoisData['is_registered'] ? 1 : 0,
-                        $user['id']
-                    ]);
-                    
-                    $processed++;
-                } catch (Exception $e) {
+            // 1. Clean all domain names
+            $cleanNames = [];
+            foreach ($batch as $raw) {
+                $name = strtolower(trim($raw));
+                $name = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $name);
+                $name = rtrim($name, '/');
+                if (empty($name) || !str_contains($name, '.')) {
                     $errors++;
                     $processed++;
+                    continue;
+                }
+                $cleanNames[] = $name;
+            }
+            
+            // 2. Filter already-existing domains
+            $toCheck = $cleanNames;
+            if (!empty($cleanNames)) {
+                $existing = [];
+                foreach (array_chunk($cleanNames, 900) as $chunk) {
+                    $ph = implode(',', array_fill(0, count($chunk), '?'));
+                    $s = $db->prepare("SELECT domain FROM domains WHERE domain IN ($ph)");
+                    $s->execute($chunk);
+                    foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $d) $existing[$d] = true;
+                }
+                $toCheck = [];
+                foreach ($cleanNames as $n) {
+                    if (isset($existing[$n])) { $processed++; }
+                    else { $toCheck[] = $n; }
                 }
             }
-        } elseif ($job['type'] === 'whois_check') {
-            // Whois check job: data is { domain_ids: [...] }
-            $domainIds = $jobDataDecoded['domain_ids'] ?? [];
-            $batch = array_slice($domainIds, $processed, $batchSize);
             
-            foreach ($batch as $domainId) {
-                try {
-                    $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
-                    $stmt->execute([$domainId]);
-                    $domain = $stmt->fetch(PDO::FETCH_ASSOC);
-                    
-                    if (!$domain) {
-                        $errors++;
-                        $processed++;
-                        continue;
+            // 3. Parallel RDAP lookup (200 concurrent via rolling window)
+            if (!empty($toCheck)) {
+                $rdapResults = $rdap->lookupBatch($toCheck);
+                
+                // 4. Fallback for RDAP misses
+                foreach ($toCheck as $name) {
+                    if (($rdapResults[$name] ?? null) === null) {
+                        try {
+                            $rdapResults[$name] = $whois->lookup($name);
+                        } catch (Exception $e) {
+                            $rdapResults[$name] = ['is_registered' => false, 'expiry_date' => null];
+                            $errors++;
+                        }
                     }
-                    
-                    $whoisData = $whois->lookup($domain['domain']);
-                    
-                    $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
-                    $stmt->execute([
-                        $whoisData['expiry_date'] ?? $domain['expiry_date'],
-                        $whoisData['is_registered'] ? 1 : 0,
-                        $domainId
-                    ]);
-                    
-                    $processed++;
-                } catch (Exception $e) {
-                    $errors++;
+                }
+                
+                // 5. Batch INSERT in transaction
+                $db->beginTransaction();
+                $ins = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
+                foreach ($toCheck as $name) {
+                    $data = $rdapResults[$name] ?? null;
+                    if ($data) {
+                        $ins->execute([$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0, $user['id']]);
+                    }
                     $processed++;
                 }
+                $db->commit();
+            }
+            
+        } elseif ($job['type'] === 'whois_check') {
+            $domainIds = $jobDataDecoded['domain_ids'] ?? [];
+            $batchIds = array_slice($domainIds, $processed, $batchSize);
+            
+            // 1. Fetch domain records in bulk
+            $rows = [];
+            foreach (array_chunk($batchIds, 900) as $chunk) {
+                $ph = implode(',', array_fill(0, count($chunk), '?'));
+                $s = $db->prepare("SELECT * FROM domains WHERE id IN ($ph)");
+                $s->execute($chunk);
+                foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) $rows[$row['domain']] = $row;
+            }
+            
+            $missing = count($batchIds) - count($rows);
+            $errors += $missing;
+            $processed += $missing;
+            
+            if (!empty($rows)) {
+                $names = array_keys($rows);
+                
+                // 2. Parallel RDAP
+                $rdapResults = $rdap->lookupBatch($names);
+                
+                // 3. Fallback for misses
+                foreach ($names as $name) {
+                    if (($rdapResults[$name] ?? null) === null) {
+                        try { $rdapResults[$name] = $whois->lookup($name); } catch (Exception $e) { $errors++; }
+                    }
+                }
+                
+                // 4. Batch UPDATE in transaction
+                $db->beginTransaction();
+                $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+                foreach ($rows as $name => $row) {
+                    $data = $rdapResults[$name] ?? null;
+                    if ($data) {
+                        $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
+                    }
+                    $processed++;
+                }
+                $db->commit();
             }
         }
         
-        // Update job
+        // Update job status
         $status = $processed >= $total ? 'completed' : 'processing';
-        $stmt = $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?");
-        $stmt->execute([$status, $processed, $errors, $jobId]);
+        $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$status, $processed, $errors, $jobId]);
         
-        // Get updated job
         $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
         $stmt->execute([$jobId]);
         $job = $stmt->fetch(PDO::FETCH_ASSOC);

@@ -54,7 +54,7 @@ export default function TasksPage() {
       for (const job of activeJobs) {
         if (cancelled) return;
         try {
-          await processJob(job.id, 20);
+          await processJob(job.id, 500);
         } catch {
           // ignore errors, will retry
         }
