@@ -615,10 +615,9 @@ function handleProfile(PDO $db, array $input, string $method): void {
 function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, string $method): void {
     $user = requireAuth();
     
-    // List jobs for current user
+    // List all jobs
     if ($action === '' && $method === 'GET') {
-        $stmt = $db->prepare("SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50");
-        $stmt->execute([$user['id']]);
+        $stmt = $db->query("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 50");
         $jobs = $stmt->fetchAll(PDO::FETCH_ASSOC);
         jsonResponse(['jobs' => $jobs]);
     }
@@ -674,8 +673,8 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
     
     // Get job status
     if (is_numeric($action) && $method === 'GET') {
-        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND user_id = ?");
-        $stmt->execute([$action, $user['id']]);
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+        $stmt->execute([$action]);
         $job = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if (!$job) {
@@ -690,8 +689,8 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         $jobId = $input['job_id'] ?? 0;
         $batchSize = min(50, max(1, $input['batch_size'] ?? 10));
         
-        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND user_id = ?");
-        $stmt->execute([$jobId, $user['id']]);
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+        $stmt->execute([$jobId]);
         $job = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if (!$job) {
@@ -789,8 +788,8 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
     
     // Delete job
     if (is_numeric($action) && $method === 'DELETE') {
-        $stmt = $db->prepare("DELETE FROM jobs WHERE id = ? AND user_id = ?");
-        $stmt->execute([$action, $user['id']]);
+        $stmt = $db->prepare("DELETE FROM jobs WHERE id = ?");
+        $stmt->execute([$action]);
         jsonResponse(['success' => true]);
     }
     
