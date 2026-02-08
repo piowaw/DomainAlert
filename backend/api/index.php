@@ -5,6 +5,32 @@ require_once __DIR__ . '/../services/WhoisService.php';
 require_once __DIR__ . '/../services/NotificationService.php';
 
 $db = initDatabase();
+
+// Auto-migrate: ensure jobs table exists (for servers with old config.php)
+try {
+    $result = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'");
+    if (!$result->fetch()) {
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                total INTEGER DEFAULT 0,
+                processed INTEGER DEFAULT 0,
+                errors INTEGER DEFAULT 0,
+                data TEXT,
+                result TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        ");
+    }
+} catch (Exception $e) {
+    // Ignore migration errors
+}
+
 $whois = new WhoisService();
 $notifications = new NotificationService($db);
 
