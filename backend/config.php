@@ -28,7 +28,7 @@ define('JWT_EXPIRY', 86400 * 7); // 7 days
 
 // Ollama AI configuration
 define('OLLAMA_URL', 'http://localhost:11434');
-define('OLLAMA_MODEL', 'deepseek-r1:1.5b'); // Zmień na inny model jeśli chcesz, np. llama3, mistral, phi3
+define('OLLAMA_MODEL', 'llama3.1:8b'); // Najlepszy stosunek jakości do wymagań (5GB RAM)
 
 // CORS headers — only for API requests (not standalone scripts)
 if (!defined('SKIP_HEADERS')) {
