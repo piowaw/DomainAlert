@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getDomainsFiltered, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, createBulkWhoisCheckJob, type Domain, type DomainFilters } from '@/lib/api';
+import { getDomainsFiltered, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, createBulkWhoisCheckJob, getDomainStats, type Domain, type DomainFilters } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -66,19 +66,15 @@ export default function DashboardPage() {
     }
   }, [searchQuery, filter, sortBy, sortDir, page, limit]);
   
-  // Load stats separately for all domains
+  // Load stats separately using dedicated endpoint
   const loadStats = useCallback(async () => {
     try {
-      const all = await getDomainsFiltered({ limit: 100000 }); // Get all for stats
-      const allDomains = all.domains;
-      const registered = allDomains.filter(d => d.is_registered).length;
-      const available = allDomains.filter(d => !d.is_registered).length;
-      const expiring = allDomains.filter(d => {
-        if (!d.is_registered || !d.expiry_date) return false;
-        const days = Math.ceil((new Date(d.expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-        return days <= 30;
-      }).length;
-      setStats({ registered, available, expiring });
+      const statsData = await getDomainStats();
+      setStats({ 
+        registered: statsData.registered, 
+        available: statsData.available, 
+        expiring: statsData.expiring 
+      });
     } catch (err) {
       console.error('Failed to load stats:', err);
     }
@@ -566,7 +562,7 @@ export default function DashboardPage() {
                 </Button>
                 
                 <Select value={String(limit)} onValueChange={(v) => setLimit(Number(v))}>
-                  <SelectTrigger className="w-20">
+                  <SelectTrigger className="w-24">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -574,6 +570,9 @@ export default function DashboardPage() {
                     <SelectItem value="25">25</SelectItem>
                     <SelectItem value="50">50</SelectItem>
                     <SelectItem value="100">100</SelectItem>
+                    <SelectItem value="250">250</SelectItem>
+                    <SelectItem value="500">500</SelectItem>
+                    <SelectItem value="1000">1000</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

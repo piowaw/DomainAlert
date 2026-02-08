@@ -10,7 +10,7 @@ require_once __DIR__ . '/config.php';
 echo "=== DomainAlert Database Migration ===\n\n";
 
 try {
-    $db = getDatabase();
+    $db = initDatabase();
     
     // Check if jobs table exists
     $result = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'");

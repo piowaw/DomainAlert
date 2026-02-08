@@ -156,7 +156,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
         $sortBy = $_GET['sort'] ?? 'expiry_date';
         $sortDir = strtoupper($_GET['dir'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
         $page = max(1, intval($_GET['page'] ?? 1));
-        $limit = max(1, min(500, intval($_GET['limit'] ?? 50)));
+        $limit = max(1, min(1000, intval($_GET['limit'] ?? 50)));
         $offset = ($page - 1) * $limit;
         
         // Build query
@@ -208,7 +208,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
                 'page' => $page,
                 'limit' => $limit,
                 'total' => (int)$total,
-                'pages' => ceil($total / $limit)
+                'total_pages' => (int)ceil($total / $limit)
             ]
         ]);
     }
@@ -338,6 +338,24 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
         $stmt = $db->prepare("DELETE FROM domains WHERE id = ?");
         $stmt->execute([$action]);
         jsonResponse(['success' => true]);
+    }
+    
+    // Get domain stats
+    if ($action === 'stats' && $method === 'GET') {
+        $stmt = $db->query("SELECT 
+            COUNT(*) as total,
+            SUM(CASE WHEN is_registered = 1 THEN 1 ELSE 0 END) as registered,
+            SUM(CASE WHEN is_registered = 0 THEN 1 ELSE 0 END) as available,
+            SUM(CASE WHEN is_registered = 1 AND expiry_date IS NOT NULL AND expiry_date <= date('now', '+30 days') THEN 1 ELSE 0 END) as expiring
+        FROM domains");
+        $stats = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        jsonResponse([
+            'total' => (int)$stats['total'],
+            'registered' => (int)$stats['registered'],
+            'available' => (int)$stats['available'],
+            'expiring' => (int)$stats['expiring']
+        ]);
     }
     
     jsonResponse(['error' => 'Not found'], 404);

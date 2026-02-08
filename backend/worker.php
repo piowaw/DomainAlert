@@ -184,7 +184,7 @@ function getNextJob(PDO $db): ?array {
 log_message("Starting DomainAlert worker" . ($daemonMode ? " in daemon mode" : ""));
 
 try {
-    $db = getDatabase();
+    $db = initDatabase();
     $whois = new WhoisService();
     
     do {

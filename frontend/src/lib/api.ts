@@ -273,6 +273,17 @@ export async function getDomainsFiltered(filters: DomainFilters = {}) {
   return apiCall<PaginatedDomains>(`domains${query ? `?${query}` : ''}`);
 }
 
+export interface DomainStats {
+  total: number;
+  registered: number;
+  available: number;
+  expiring: number;
+}
+
+export async function getDomainStats() {
+  return apiCall<DomainStats>('domains/stats');
+}
+
 // Profile
 export async function getProfile() {
   return apiCall<{ user: User }>('profile');
