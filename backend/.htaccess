@@ -59,20 +59,3 @@ RewriteRule ^(.*)$ public/index.html [L]
     Header always set X-Frame-Options "SAMEORIGIN"
     Header always set X-XSS-Protection "1; mode=block"
 </IfModule>
-
-# PHP timeouts - AI endpoints need more time
-<IfModule mod_php.c>
-    php_value max_execution_time 600
-    php_value max_input_time 600
-</IfModule>
-
-# For PHP-FPM (Plesk) — set timeout via PHP userini
-<IfModule mod_fcgid.c>
-    FcgidIOTimeout 600
-    FcgidBusyTimeout 600
-</IfModule>
-
-# For mod_proxy_fcgi (used by Plesk with PHP-FPM)
-<IfModule mod_proxy_fcgi.c>
-    ProxyTimeout 600
-</IfModule>
