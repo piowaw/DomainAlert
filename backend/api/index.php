@@ -1311,6 +1311,22 @@ function handleMigrate(PDO $mysql): void {
     $nl = "<br>\n";
     
     echo "=== DomainAlert MySQL Status ===$nl$nl";
+    
+    // Debug: show which DB driver is actually connected
+    $driver = $mysql->getAttribute(PDO::ATTR_DRIVER_NAME);
+    $serverInfo = '';
+    try { $serverInfo = $mysql->getAttribute(PDO::ATTR_SERVER_VERSION); } catch (Exception $e) {}
+    echo "DB Driver: $driver | Version: $serverInfo$nl";
+    
+    if ($driver !== 'mysql') {
+        echo "{$nl}⚠ ERROR: Still connected to $driver instead of MySQL!$nl";
+        echo "Your config.php on the server still has the old SQLite connection.$nl";
+        echo "The deployed config.php needs to be updated with MySQL settings.$nl$nl";
+        echo "Expected DSN: mysql:host=localhost;dbname=domainalert;charset=utf8mb4$nl";
+        echo "Check: DB_HOST, DB_NAME, DB_USER, DB_PASS constants in config.php$nl";
+        echo "</pre>";
+        exit;
+    }
     flush();
     
     // Show MySQL tables
