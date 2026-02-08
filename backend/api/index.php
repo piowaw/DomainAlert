@@ -1300,20 +1300,39 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
 
 // ── Migration endpoint — visit /api/migrate in browser ──
 function handleMigrate(PDO $mysql): void {
+    // Disable the global error/exception handlers for this HTML page
+    restore_error_handler();
+    restore_exception_handler();
+    
     header_remove('Content-Type');
     header('Content-Type: text/html; charset=utf-8');
+    
     echo "<pre style='font-family:monospace;font-size:14px;padding:20px;'>";
-    $nl = "<br>";
+    $nl = "<br>\n";
     
     echo "=== DomainAlert MySQL Status ===$nl$nl";
+    flush();
     
     // Show MySQL tables
     $tables = ['users', 'domains', 'notifications', 'invitations', 'jobs'];
     foreach ($tables as $table) {
-        $result = $mysql->query("SHOW TABLES LIKE '$table'");
-        $count = (int)$mysql->query("SELECT COUNT(*) FROM $table")->fetchColumn();
-        $icon = $result->fetch() ? '✓' : '✗';
-        echo "$icon Table '$table' — $count rows$nl";
+        try {
+            $result = $mysql->query("SHOW TABLES LIKE '$table'");
+            $exists = (bool)$result->fetch();
+            $result->closeCursor();
+            
+            if ($exists) {
+                $countStmt = $mysql->query("SELECT COUNT(*) FROM `$table`");
+                $count = (int)$countStmt->fetchColumn();
+                $countStmt->closeCursor();
+                echo "✓ Table '$table' — $count rows$nl";
+            } else {
+                echo "✗ Table '$table' — MISSING$nl";
+            }
+        } catch (Exception $e) {
+            echo "✗ Table '$table' — ERROR: " . htmlspecialchars($e->getMessage()) . $nl;
+        }
+        flush();
     }
     
     echo "{$nl}── SQLite Migration ──$nl";
