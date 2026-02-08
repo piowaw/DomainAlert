@@ -320,10 +320,10 @@ export async function getJobStatus(id: number) {
   return apiCall<{ job: Job }>(`jobs/${id}`);
 }
 
-export async function processJob(jobId: number) {
+export async function processJob(jobId: number, batchSize: number = 20) {
   return apiCall<{ job: Job }>('jobs/process', {
     method: 'POST',
-    body: { job_id: jobId },
+    body: { job_id: jobId, batch_size: batchSize },
   });
 }
 

@@ -42,28 +42,53 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // Kick off pending jobs and poll active ones for status
+  // Parallel workers: fire N concurrent processJob requests continuously
+  // Each request processes batch_size domains with 20 concurrent RDAP
+  // 10 workers × 20 domains × 20 RDAP = 200 simultaneous lookups
+  const NUM_WORKERS = 10;
+  const BATCH_SIZE = 20;
+  
   useEffect(() => {
     const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'processing');
     if (activeJobs.length === 0) return;
     
     let cancelled = false;
-    const kickedOff = new Set<number>();
     
-    // Fire-and-forget: kick off processing for pending AND stale processing jobs
-    // Backend handles stale detection (>2min since last update = dead process)
-    for (const job of activeJobs) {
-      if (!kickedOff.has(job.id)) {
-        kickedOff.add(job.id);
-        processJob(job.id).catch(() => {}); // fire and forget
+    // Each worker is an async loop that continuously processes batches
+    async function worker(job: Job) {
+      while (!cancelled) {
+        try {
+          const result = await processJob(job.id, BATCH_SIZE);
+          if (result.job.status === 'completed' || result.message === 'completed') {
+            break; // job done
+          }
+          if (result.message === 'batch claimed by another worker') {
+            // Contention — tiny delay then retry
+            await new Promise(r => setTimeout(r, 100));
+          }
+        } catch {
+          // Error — small delay then retry
+          await new Promise(r => setTimeout(r, 500));
+        }
       }
     }
     
-    // Poll for status updates independently
+    // Launch workers for each active job
+    const allWorkers: Promise<void>[] = [];
+    for (const job of activeJobs) {
+      for (let i = 0; i < NUM_WORKERS; i++) {
+        allWorkers.push(worker(job));
+      }
+    }
+    
+    // Poll for UI updates
     const interval = setInterval(async () => {
       if (cancelled) return;
       await loadJobs();
-    }, 3000);
+    }, 2000);
+    
+    // When all workers finish, do a final refresh
+    Promise.all(allWorkers).then(() => { if (!cancelled) loadJobs(); });
     
     return () => { cancelled = true; clearInterval(interval); };
   }, [jobs.filter(j => j.status === 'pending' || j.status === 'processing').map(j => j.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
