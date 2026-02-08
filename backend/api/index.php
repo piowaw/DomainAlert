@@ -1042,38 +1042,70 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
         jsonResponse(['response' => $response ?? 'Ollama nie jest dostępna. Sprawdź czy serwer jest uruchomiony.']);
     }
     
-    // ====== AI Environment Management (admin only) ======
+    // ====== AI Environment Management via Docker (admin only) ======
     
-    // Install Ollama
+    // Install/Start Ollama Docker container
     if ($action === 'install' && $method === 'POST') {
         requireAdmin();
         $output = [];
         $returnCode = 0;
         
-        // Check if already installed
-        exec('which ollama 2>/dev/null', $checkOutput, $checkCode);
-        if ($checkCode === 0) {
-            jsonResponse(['success' => true, 'message' => 'Ollama jest już zainstalowana', 'output' => 'Ollama already installed at: ' . implode("\n", $checkOutput), 'already_installed' => true]);
+        // Check if container already exists
+        exec('docker ps -a --filter "name=ollama" --format "{{.Names}}" 2>&1', $checkOutput, $checkCode);
+        $containerExists = !empty($checkOutput) && in_array('ollama', $checkOutput);
+        
+        if ($containerExists) {
+            // Check if running
+            exec('docker ps --filter "name=ollama" --filter "status=running" --format "{{.Names}}" 2>&1', $runningOutput);
+            if (!empty($runningOutput)) {
+                jsonResponse(['success' => true, 'message' => 'Kontener Ollama już działa', 'output' => 'Container ollama is already running', 'already_installed' => true]);
+            }
+            // Start existing container
+            exec('docker start ollama 2>&1', $output, $returnCode);
+            sleep(3);
+            $status = $ai->getStatus();
+            jsonResponse([
+                'success' => $returnCode === 0,
+                'message' => $returnCode === 0 ? 'Kontener Ollama uruchomiony' : 'Błąd uruchamiania kontenera',
+                'output' => implode("\n", $output),
+                'status' => $status
+            ]);
         }
         
-        // Install Ollama
-        exec('curl -fsSL https://ollama.com/install.sh | sh 2>&1', $output, $returnCode);
+        // Create and run new container
+        $gpuFlag = '';
+        exec('docker info 2>/dev/null | grep -i "nvidia\|gpu"', $gpuCheck);
+        if (!empty($gpuCheck)) {
+            $gpuFlag = '--gpus all';
+        }
+        
+        $cmd = "docker run -d {$gpuFlag} -v ollama_data:/root/.ollama -p 11434:11434 --name ollama --restart unless-stopped ollama/ollama 2>&1";
+        exec($cmd, $output, $returnCode);
         
         if ($returnCode === 0) {
-            jsonResponse(['success' => true, 'message' => 'Ollama zainstalowana pomyślnie', 'output' => implode("\n", $output)]);
+            sleep(3);
+            $status = $ai->getStatus();
+            jsonResponse(['success' => true, 'message' => 'Kontener Ollama utworzony i uruchomiony', 'output' => implode("\n", $output), 'status' => $status]);
         } else {
-            jsonResponse(['success' => false, 'message' => 'Błąd instalacji Ollama', 'output' => implode("\n", $output)], 500);
+            jsonResponse(['success' => false, 'message' => 'Błąd tworzenia kontenera Ollama', 'output' => implode("\n", $output)], 500);
         }
     }
     
-    // Pull model
+    // Pull model (inside Docker container)
     if ($action === 'pull-model' && $method === 'POST') {
         requireAdmin();
         $model = $input['model'] ?? OLLAMA_MODEL;
         $output = [];
         $returnCode = 0;
         
-        exec("ollama pull {$model} 2>&1", $output, $returnCode);
+        // Check if container is running
+        exec('docker ps --filter "name=ollama" --filter "status=running" --format "{{.Names}}" 2>&1', $runCheck);
+        if (empty($runCheck)) {
+            jsonResponse(['success' => false, 'message' => 'Kontener Ollama nie jest uruchomiony. Najpierw zainstaluj/uruchom Ollama.', 'output' => ''], 400);
+        }
+        
+        $model = escapeshellarg($model);
+        exec("docker exec ollama ollama pull {$model} 2>&1", $output, $returnCode);
         
         if ($returnCode === 0) {
             jsonResponse(['success' => true, 'message' => "Model {$model} pobrany pomyślnie", 'output' => implode("\n", $output)]);
@@ -1082,40 +1114,74 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
         }
     }
     
-    // Restart Ollama
+    // Restart Ollama container
     if ($action === 'restart' && $method === 'POST') {
         requireAdmin();
         $output = [];
         $returnCode = 0;
         
-        // Try systemctl first, then ollama serve
-        exec('systemctl restart ollama 2>&1', $output, $returnCode);
+        exec('docker restart ollama 2>&1', $output, $returnCode);
         
-        if ($returnCode !== 0) {
-            // Fallback: kill and restart
-            exec('pkill ollama 2>/dev/null; nohup ollama serve > /dev/null 2>&1 & echo "Ollama restarted via process"', $output, $returnCode);
-        }
-        
-        // Wait a moment for Ollama to start
-        sleep(2);
+        // Wait for Ollama to start
+        sleep(3);
         
         // Check if running
         $status = $ai->getStatus();
         
         jsonResponse([
             'success' => $status['ollama_running'],
-            'message' => $status['ollama_running'] ? 'Ollama zrestartowana pomyślnie' : 'Ollama nie odpowiada po restarcie',
+            'message' => $status['ollama_running'] ? 'Kontener Ollama zrestartowany pomyślnie' : 'Ollama nie odpowiada po restarcie',
             'output' => implode("\n", $output),
             'status' => $status
         ]);
     }
     
-    // Stop Ollama
+    // Stop Ollama container
     if ($action === 'stop' && $method === 'POST') {
         requireAdmin();
         $output = [];
-        exec('systemctl stop ollama 2>&1 || pkill ollama 2>&1', $output, $returnCode);
-        jsonResponse(['success' => true, 'message' => 'Ollama zatrzymana', 'output' => implode("\n", $output)]);
+        $returnCode = 0;
+        exec('docker stop ollama 2>&1', $output, $returnCode);
+        jsonResponse(['success' => $returnCode === 0, 'message' => $returnCode === 0 ? 'Kontener Ollama zatrzymany' : 'Błąd zatrzymywania kontenera', 'output' => implode("\n", $output)]);
+    }
+    
+    // Remove Ollama container (for clean reinstall)
+    if ($action === 'remove' && $method === 'POST') {
+        requireAdmin();
+        $output = [];
+        exec('docker stop ollama 2>/dev/null; docker rm ollama 2>&1', $output, $returnCode);
+        jsonResponse(['success' => true, 'message' => 'Kontener Ollama usunięty', 'output' => implode("\n", $output)]);
+    }
+    
+    // Docker status info
+    if ($action === 'docker-status' && $method === 'GET') {
+        requireAdmin();
+        $dockerInfo = [];
+        
+        // Check Docker availability
+        exec('docker --version 2>&1', $dockerVersion, $dockerCode);
+        $dockerInfo['docker_available'] = $dockerCode === 0;
+        $dockerInfo['docker_version'] = $dockerCode === 0 ? implode('', $dockerVersion) : null;
+        
+        // Check Ollama container
+        exec('docker ps -a --filter "name=ollama" --format "{{.ID}}|{{.Status}}|{{.Image}}|{{.Ports}}" 2>&1', $containerInfo);
+        if (!empty($containerInfo)) {
+            $parts = explode('|', $containerInfo[0]);
+            $dockerInfo['container'] = [
+                'id' => $parts[0] ?? '',
+                'status' => $parts[1] ?? '',
+                'image' => $parts[2] ?? '',
+                'ports' => $parts[3] ?? '',
+            ];
+        } else {
+            $dockerInfo['container'] = null;
+        }
+        
+        // Check volume
+        exec('docker volume inspect ollama_data 2>/dev/null | grep -o "Mountpoint.*" | head -1', $volInfo);
+        $dockerInfo['volume_exists'] = !empty($volInfo);
+        
+        jsonResponse($dockerInfo);
     }
     
     jsonResponse(['error' => 'Not found'], 404);

@@ -13,10 +13,13 @@ import {
   pullModel,
   restartOllama,
   stopOllama,
+  removeOllama,
+  getDockerStatus,
   type AiConversation,
   type AiMessage,
   type AiStatus,
   type KnowledgeEntry,
+  type DockerStatus,
 } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -45,6 +48,8 @@ import {
   Power,
   PowerOff,
   Terminal,
+  Container,
+  Play,
 } from 'lucide-react';
 
 export default function AiChatPage() {
@@ -73,6 +78,7 @@ export default function AiChatPage() {
   // AI Management
   const [mgmtLoading, setMgmtLoading] = useState<string | null>(null);
   const [mgmtOutput, setMgmtOutput] = useState<string | null>(null);
+  const [dockerStatus, setDockerStatus] = useState<DockerStatus | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
@@ -89,6 +95,10 @@ export default function AiChatPage() {
     try {
       const status = await getAiStatus();
       setAiStatus(status);
+    } catch { /* ignore */ }
+    try {
+      const ds = await getDockerStatus();
+      setDockerStatus(ds);
     } catch { /* ignore */ }
   };
 
@@ -564,6 +574,48 @@ export default function AiChatPage() {
 
             <Card>
               <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Container className="h-4 w-4" /> Docker
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center gap-2">
+                  {dockerStatus?.docker_available ? (
+                    <><CheckCircle className="h-5 w-5 text-green-500" /> <span className="font-medium">Docker dostępny</span></>
+                  ) : (
+                    <><XCircle className="h-5 w-5 text-red-500" /> <span className="font-medium">Docker niedostępny</span></>
+                  )}
+                </div>
+                {dockerStatus?.docker_version && (
+                  <div>
+                    <p className="text-xs text-muted-foreground">Wersja</p>
+                    <p className="text-sm font-mono">{dockerStatus.docker_version}</p>
+                  </div>
+                )}
+                {dockerStatus?.container ? (
+                  <div>
+                    <p className="text-xs text-muted-foreground">Kontener Ollama</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <Badge variant={dockerStatus.container.status.includes('Up') ? 'default' : 'outline'} className="text-xs">
+                        {dockerStatus.container.status}
+                      </Badge>
+                    </div>
+                    <p className="text-xs font-mono mt-1 text-muted-foreground">{dockerStatus.container.image}</p>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-xs text-muted-foreground">Kontener Ollama</p>
+                    <p className="text-sm">Nie utworzony</p>
+                  </div>
+                )}
+                {dockerStatus?.volume_exists && (
+                  <Badge variant="outline" className="text-xs">Volume: ollama_data</Badge>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
                 <CardTitle className="text-lg">Dostępne modele</CardTitle>
               </CardHeader>
               <CardContent>
@@ -590,13 +642,13 @@ export default function AiChatPage() {
             <Card className="md:col-span-2">
               <CardHeader>
                 <CardTitle className="text-lg flex items-center gap-2">
-                  <Power className="h-4 w-4" /> Zarządzanie środowiskiem AI
+                  <Power className="h-4 w-4" /> Zarządzanie kontenerem Ollama
                 </CardTitle>
-                <CardDescription>Instalacja, restart i zarządzanie Ollama z poziomu przeglądarki</CardDescription>
+                <CardDescription>Uruchamianie, restart i zarządzanie Ollama przez Docker na serwerze</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {/* Install Ollama */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                  {/* Start/Install Container */}
                   <Button 
                     variant={aiStatus?.ollama_running ? "outline" : "default"}
                     className="h-auto py-3 flex flex-col items-center gap-1"
@@ -606,10 +658,10 @@ export default function AiChatPage() {
                     {mgmtLoading === 'install' ? (
                       <Loader2 className="h-5 w-5 animate-spin" />
                     ) : (
-                      <Download className="h-5 w-5" />
+                      <Play className="h-5 w-5" />
                     )}
-                    <span className="text-sm font-medium">Zainstaluj Ollama</span>
-                    <span className="text-xs text-muted-foreground font-normal">Pobranie i instalacja</span>
+                    <span className="text-sm font-medium">Uruchom Ollama</span>
+                    <span className="text-xs text-muted-foreground font-normal">Docker container</span>
                   </Button>
 
                   {/* Pull Model */}
@@ -622,13 +674,13 @@ export default function AiChatPage() {
                     {mgmtLoading === 'pull' ? (
                       <Loader2 className="h-5 w-5 animate-spin" />
                     ) : (
-                      <Brain className="h-5 w-5" />
+                      <Download className="h-5 w-5" />
                     )}
                     <span className="text-sm font-medium">Pobierz model</span>
                     <span className="text-xs text-muted-foreground font-normal">{aiStatus?.model || 'deepseek-r1:1.5b'}</span>
                   </Button>
 
-                  {/* Restart Ollama */}
+                  {/* Restart Container */}
                   <Button 
                     variant="outline"
                     className="h-auto py-3 flex flex-col items-center gap-1"
@@ -640,13 +692,13 @@ export default function AiChatPage() {
                     ) : (
                       <RefreshCw className="h-5 w-5" />
                     )}
-                    <span className="text-sm font-medium">Restart Ollama</span>
+                    <span className="text-sm font-medium">Restart</span>
                     <span className="text-xs text-muted-foreground font-normal">Uruchom ponownie</span>
                   </Button>
 
-                  {/* Stop Ollama */}
+                  {/* Stop Container */}
                   <Button 
-                    variant="destructive"
+                    variant="outline"
                     className="h-auto py-3 flex flex-col items-center gap-1"
                     disabled={mgmtLoading !== null || !aiStatus?.ollama_running}
                     onClick={() => handleMgmtAction('stop', stopOllama)}
@@ -656,8 +708,24 @@ export default function AiChatPage() {
                     ) : (
                       <PowerOff className="h-5 w-5" />
                     )}
-                    <span className="text-sm font-medium">Zatrzymaj Ollama</span>
-                    <span className="text-xs font-normal opacity-80">Wyłącz serwer AI</span>
+                    <span className="text-sm font-medium">Zatrzymaj</span>
+                    <span className="text-xs text-muted-foreground font-normal">Stop kontener</span>
+                  </Button>
+
+                  {/* Remove Container */}
+                  <Button 
+                    variant="destructive"
+                    className="h-auto py-3 flex flex-col items-center gap-1"
+                    disabled={mgmtLoading !== null}
+                    onClick={() => handleMgmtAction('remove', removeOllama)}
+                  >
+                    {mgmtLoading === 'remove' ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-5 w-5" />
+                    )}
+                    <span className="text-sm font-medium">Usuń kontener</span>
+                    <span className="text-xs font-normal opacity-80">Reinstalacja</span>
                   </Button>
                 </div>
 
@@ -678,39 +746,62 @@ export default function AiChatPage() {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     <span>
-                      {mgmtLoading === 'install' && 'Instalowanie Ollama... (może potrwać kilka minut)'}
-                      {mgmtLoading === 'pull' && 'Pobieranie modelu... (może potrwać kilka minut)'}
-                      {mgmtLoading === 'restart' && 'Restartowanie Ollama...'}
-                      {mgmtLoading === 'stop' && 'Zatrzymywanie Ollama...'}
+                      {mgmtLoading === 'install' && 'Uruchamianie kontenera Ollama... (może potrwać kilka minut przy pierwszym uruchomieniu)'}
+                      {mgmtLoading === 'pull' && 'Pobieranie modelu w kontenerze... (może potrwać kilka minut)'}
+                      {mgmtLoading === 'restart' && 'Restartowanie kontenera...'}
+                      {mgmtLoading === 'stop' && 'Zatrzymywanie kontenera...'}
+                      {mgmtLoading === 'remove' && 'Usuwanie kontenera...'}
                     </span>
                   </div>
                 )}
               </CardContent>
             </Card>
 
+            {/* Portainer Instructions */}
             <Card className="md:col-span-2">
               <CardHeader>
-                <CardTitle className="text-lg">Instrukcja ręcznej instalacji</CardTitle>
+                <CardTitle className="text-lg">Instrukcja Portainer / Docker CLI</CardTitle>
+                <CardDescription>Jak ręcznie skonfigurować Ollama przez Portainer lub terminal</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="bg-muted rounded-lg p-4 font-mono text-sm space-y-1">
-                  <p className="text-muted-foreground"># 1. Zainstaluj Ollama</p>
-                  <p>curl -fsSL https://ollama.com/install.sh | sh</p>
-                  <br />
-                  <p className="text-muted-foreground"># 2. Pobierz model DeepSeek R1</p>
-                  <p>ollama pull deepseek-r1:1.5b</p>
-                  <br />
-                  <p className="text-muted-foreground"># 3. Uruchom serwer (powinien działać automatycznie)</p>
-                  <p>ollama serve</p>
-                  <br />
-                  <p className="text-muted-foreground"># 4. Sprawdź czy działa</p>
-                  <p>curl http://localhost:11434/api/tags</p>
+              <CardContent className="space-y-4">
+                <div>
+                  <h4 className="font-medium text-sm mb-2">🐳 Przez Portainer (GUI)</h4>
+                  <ol className="text-sm space-y-2 list-decimal pl-5 text-muted-foreground">
+                    <li>Otwórz <strong>Portainer</strong> → <strong>Containers</strong> → <strong>Add Container</strong></li>
+                    <li>Name: <code className="text-xs bg-muted px-1 rounded">ollama</code></li>
+                    <li>Image: <code className="text-xs bg-muted px-1 rounded">ollama/ollama:latest</code></li>
+                    <li>Port mapping: <code className="text-xs bg-muted px-1 rounded">11434 → 11434</code></li>
+                    <li>Volumes: <code className="text-xs bg-muted px-1 rounded">ollama_data → /root/.ollama</code></li>
+                    <li>Restart policy: <code className="text-xs bg-muted px-1 rounded">Unless stopped</code></li>
+                    <li>Kliknij <strong>Deploy the container</strong></li>
+                    <li>Po starcie przejdź do <strong>Console</strong> kontenera i wykonaj: <code className="text-xs bg-muted px-1 rounded">ollama pull deepseek-r1:1.5b</code></li>
+                  </ol>
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm mb-2">💻 Przez terminal (Docker CLI)</h4>
+                  <div className="bg-muted rounded-lg p-4 font-mono text-sm space-y-1">
+                    <p className="text-muted-foreground"># 1. Uruchom kontener Ollama</p>
+                    <p>docker run -d -v ollama_data:/root/.ollama \</p>
+                    <p>  -p 11434:11434 --name ollama \</p>
+                    <p>  --restart unless-stopped ollama/ollama</p>
+                    <br />
+                    <p className="text-muted-foreground"># 2. Pobierz model AI</p>
+                    <p>docker exec ollama ollama pull deepseek-r1:1.5b</p>
+                    <br />
+                    <p className="text-muted-foreground"># 3. Sprawdź czy działa</p>
+                    <p>curl http://localhost:11434/api/tags</p>
+                    <br />
+                    <p className="text-muted-foreground"># Zarządzanie kontenerem</p>
+                    <p>docker stop ollama    # Zatrzymaj</p>
+                    <p>docker start ollama   # Uruchom</p>
+                    <p>docker restart ollama # Restart</p>
+                    <p>docker logs ollama    # Logi</p>
+                  </div>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  Po zainstalowaniu Ollama będzie automatycznie uruchomiona. 
-                  Model DeepSeek R1 1.5B wymaga ~1.5 GB RAM. 
-                  Możesz użyć większego modelu (np. <code className="text-xs bg-muted px-1 rounded">deepseek-r1:7b</code>) 
-                  dla lepszych wyników, ale wymaga więcej pamięci.
+                  Model DeepSeek R1 1.5B wymaga ~1.5 GB RAM. Dane modeli są przechowywane
+                  w Docker volume <code className="text-xs bg-muted px-1 rounded">ollama_data</code>, więc przetrwają restart kontenera.
+                  Dla lepszych wyników użyj <code className="text-xs bg-muted px-1 rounded">deepseek-r1:7b</code> (wymaga ~8 GB RAM).
                 </p>
               </CardContent>
             </Card>

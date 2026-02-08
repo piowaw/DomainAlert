@@ -484,13 +484,25 @@ export async function quickAiChat(message: string) {
   });
 }
 
-// AI Environment Management
+// AI Environment Management (Docker)
 export interface AiManagementResult {
   success: boolean;
   message: string;
   output: string;
   already_installed?: boolean;
   status?: AiStatus;
+}
+
+export interface DockerStatus {
+  docker_available: boolean;
+  docker_version: string | null;
+  container: {
+    id: string;
+    status: string;
+    image: string;
+    ports: string;
+  } | null;
+  volume_exists: boolean;
 }
 
 export async function installOllama() {
@@ -510,4 +522,12 @@ export async function restartOllama() {
 
 export async function stopOllama() {
   return apiCall<AiManagementResult>('ai/stop', { method: 'POST' });
+}
+
+export async function removeOllama() {
+  return apiCall<AiManagementResult>('ai/remove', { method: 'POST' });
+}
+
+export async function getDockerStatus() {
+  return apiCall<DockerStatus>('ai/docker-status');
 }
