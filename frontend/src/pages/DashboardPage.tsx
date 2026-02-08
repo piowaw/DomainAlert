@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { getDomains, addDomain, importDomains, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, type Domain } from '@/lib/api';
+import { getDomains, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, type Domain } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -28,6 +28,7 @@ export default function DashboardPage() {
   const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
   const [testingNtfy, setTestingNtfy] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
 
   useEffect(() => {
     loadDomains();
@@ -76,9 +77,29 @@ export default function DashboardPage() {
     if (!importText.trim()) return;
 
     setImportLoading(true);
+    setImportProgress({ current: 0, total: 0 });
+    
     try {
-      const result = await importDomains(importText);
-      alert(`Zaimportowano ${result.imported.length} domen`);
+      // Parse domains from text
+      const domains = importText
+        .split(/[,\s\n]+/)
+        .map(d => d.trim())
+        .filter(d => d.length > 0);
+      
+      if (domains.length === 0) {
+        alert('Nie znaleziono domen do zaimportowania');
+        return;
+      }
+      
+      setImportProgress({ current: 0, total: domains.length });
+      
+      const result = await importDomainsInBatches(
+        domains,
+        50, // batch size
+        (current, total) => setImportProgress({ current, total })
+      );
+      
+      alert(`Zaimportowano ${result.imported} domen${result.errors > 0 ? ` (błędy: ${result.errors})` : ''}`);
       setImportText('');
       setImportDialogOpen(false);
       await loadDomains();
@@ -86,6 +107,7 @@ export default function DashboardPage() {
       alert(err instanceof Error ? err.message : 'Failed to import domains');
     } finally {
       setImportLoading(false);
+      setImportProgress(null);
     }
   };
 
@@ -387,6 +409,20 @@ export default function DashboardPage() {
                     onChange={(e) => setImportText(e.target.value)}
                     className="mt-2 h-32"
                   />
+                  {importProgress && (
+                    <div className="mt-4 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>Postęp importu...</span>
+                        <span>{importProgress.current} / {importProgress.total}</span>
+                      </div>
+                      <div className="w-full bg-muted rounded-full h-2">
+                        <div 
+                          className="bg-primary h-2 rounded-full transition-all"
+                          style={{ width: `${importProgress.total > 0 ? (importProgress.current / importProgress.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <DialogFooter>
                   <Button type="submit" disabled={importLoading}>

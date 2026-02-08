@@ -77,6 +77,37 @@ export async function importDomains(text: string) {
   });
 }
 
+// Import domains in batches to avoid timeouts
+export async function importDomainsInBatches(
+  domains: string[],
+  batchSize: number = 50,
+  onProgress?: (imported: number, total: number) => void
+): Promise<{ imported: number; errors: number }> {
+  let imported = 0;
+  let errors = 0;
+  
+  for (let i = 0; i < domains.length; i += batchSize) {
+    const batch = domains.slice(i, i + batchSize);
+    try {
+      const result = await importDomains(batch.join(','));
+      imported += result.imported.length;
+    } catch (err) {
+      errors += batch.length;
+    }
+    
+    if (onProgress) {
+      onProgress(Math.min(i + batchSize, domains.length), domains.length);
+    }
+    
+    // Small delay between batches to avoid overloading server
+    if (i + batchSize < domains.length) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+  
+  return { imported, errors };
+}
+
 export async function checkDomain(id: number) {
   return apiCall<{ domain: Domain; whois: WhoisData }>('domains/check', {
     method: 'POST',

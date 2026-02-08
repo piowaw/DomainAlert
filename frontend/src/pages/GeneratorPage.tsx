@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
-import { importDomains } from '@/lib/api';
+import { importDomainsInBatches } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -60,6 +60,8 @@ export default function GeneratorPage() {
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
   const [importSuccess, setImportSuccess] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
+  const [importResult, setImportResult] = useState<{ imported: number; errors: number } | null>(null);
   
   // Length-based generator
   const [domainLength, setDomainLength] = useState(4);
@@ -350,21 +352,43 @@ export default function GeneratorPage() {
     navigator.clipboard.writeText(text);
   };
 
-  // Add to monitoring
+  // Add to monitoring (selected domains)
   const addToMonitoring = async () => {
     if (selectedDomains.size === 0) return;
-    
+    await importDomainsWithProgress([...selectedDomains]);
+    setSelectedDomains(new Set());
+  };
+
+  // Add all generated domains
+  const addAllToMonitoring = async () => {
+    if (generatedDomains.length === 0) return;
+    await importDomainsWithProgress(generatedDomains);
+  };
+
+  // Import with batch processing and progress
+  const importDomainsWithProgress = async (domains: string[]) => {
     setImporting(true);
+    setImportProgress({ current: 0, total: domains.length });
+    setImportResult(null);
+    
     try {
-      const domainsText = [...selectedDomains].join(',');
-      await importDomains(domainsText);
+      const result = await importDomainsInBatches(
+        domains,
+        50, // batch size
+        (current, total) => setImportProgress({ current, total })
+      );
+      
+      setImportResult(result);
       setImportSuccess(true);
-      setTimeout(() => setImportSuccess(false), 3000);
-      setSelectedDomains(new Set());
+      setTimeout(() => {
+        setImportSuccess(false);
+        setImportResult(null);
+      }, 5000);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to import domains');
     } finally {
       setImporting(false);
+      setImportProgress(null);
     }
   };
 
@@ -827,29 +851,78 @@ export default function GeneratorPage() {
             </Card>
 
             {/* Actions */}
-            {selectedDomains.size > 0 && (
+            {generatedDomains.length > 0 && (
               <Card>
-                <CardContent className="pt-4 space-y-2">
-                  <p className="text-sm font-medium">
-                    Zaznaczono: {selectedDomains.size}
-                  </p>
-                  <div className="flex gap-2">
-                    <Button 
-                      onClick={addToMonitoring} 
-                      disabled={importing}
-                      className="flex-1"
-                    >
-                      {importing ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : importSuccess ? (
-                        <Check className="h-4 w-4 mr-2" />
-                      ) : (
-                        <Plus className="h-4 w-4 mr-2" />
+                <CardContent className="pt-4 space-y-3">
+                  {/* Progress indicator */}
+                  {importProgress && (
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span>Importowanie...</span>
+                        <span>{importProgress.current} / {importProgress.total}</span>
+                      </div>
+                      <div className="w-full bg-muted rounded-full h-2">
+                        <div 
+                          className="bg-primary h-2 rounded-full transition-all"
+                          style={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Result message */}
+                  {importResult && (
+                    <div className="text-sm p-2 bg-primary/10 rounded">
+                      Zaimportowano: {importResult.imported}
+                      {importResult.errors > 0 && (
+                        <span className="text-destructive"> (błędy: {importResult.errors})</span>
                       )}
-                      {importSuccess ? 'Dodano!' : 'Dodaj do monitoringu'}
-                    </Button>
-                    <Button variant="outline" onClick={copyToClipboard}>
-                      <Copy className="h-4 w-4" />
+                    </div>
+                  )}
+                  
+                  {/* Selection info */}
+                  {selectedDomains.size > 0 && (
+                    <p className="text-sm font-medium">
+                      Zaznaczono: {selectedDomains.size}
+                    </p>
+                  )}
+                  
+                  {/* Action buttons */}
+                  <div className="flex flex-col gap-2">
+                    {selectedDomains.size > 0 ? (
+                      <Button 
+                        onClick={addToMonitoring} 
+                        disabled={importing}
+                        className="w-full"
+                      >
+                        {importing ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : importSuccess ? (
+                          <Check className="h-4 w-4 mr-2" />
+                        ) : (
+                          <Plus className="h-4 w-4 mr-2" />
+                        )}
+                        {importSuccess ? 'Dodano!' : `Dodaj zaznaczone (${selectedDomains.size})`}
+                      </Button>
+                    ) : (
+                      <Button 
+                        onClick={addAllToMonitoring} 
+                        disabled={importing}
+                        className="w-full"
+                      >
+                        {importing ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : importSuccess ? (
+                          <Check className="h-4 w-4 mr-2" />
+                        ) : (
+                          <Plus className="h-4 w-4 mr-2" />
+                        )}
+                        {importSuccess ? 'Dodano!' : `Dodaj wszystkie (${generatedDomains.length})`}
+                      </Button>
+                    )}
+                    <Button variant="outline" onClick={copyToClipboard} disabled={selectedDomains.size === 0}>
+                      <Copy className="h-4 w-4 mr-2" />
+                      Kopiuj zaznaczone
                     </Button>
                   </div>
                 </CardContent>
