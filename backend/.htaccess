@@ -9,8 +9,8 @@ RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
 # RewriteCond %{HTTPS} off
 # RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
 
-# Allow direct access to migration scripts
-RewriteRule ^migrate(-to-mysql)?\.php$ - [L]
+# Allow direct access to migration/fix scripts
+RewriteRule ^(migrate(-to-mysql)?|fix-config)\.php$ - [L]
 
 # API routing
 RewriteCond %{REQUEST_FILENAME} !-f
