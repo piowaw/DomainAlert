@@ -8,7 +8,7 @@ set -e
 DEPLOY_DIR="/var/www/vhosts/domainalert.piowaw.com/httpdocs"
 REPO_URL="https://github.com/piowaw/DomainAlert.git"
 BRANCH="main"
-OLLAMA_MODEL="deepseek-r1:1.5b"
+OLLAMA_MODEL="llama3.1:8b"
 
 echo "╔══════════════════════════════════════════╗"
 echo "║     DomainAlert - Full Deploy Script     ║"
@@ -43,9 +43,17 @@ else
     cd httpdocs
 fi
 
-# Copy backend files to public_html root
+# Copy backend files to public_html root (but don't overwrite config.php with server credentials)
 echo "Copying backend files..."
-cp -r backend/* .
+if [ -f "config.php" ]; then
+    # Preserve server config.php (has MySQL credentials)
+    cp config.php config.php.server.bak
+    cp -r backend/* .
+    cp config.php.server.bak config.php
+    rm -f config.php.server.bak
+else
+    cp -r backend/* .
+fi
 
 # Set permissions
 echo "Setting permissions..."
