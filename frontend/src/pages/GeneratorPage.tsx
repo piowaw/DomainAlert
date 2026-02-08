@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { importDomainsInBatches } from '@/lib/api';
+import { useNavigate } from 'react-router-dom';
+import { createImportJob } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Wand2, Plus, Copy, Loader2, Check, Shuffle, Filter, Download } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 // TLD options
 const TLDS = [
@@ -56,9 +58,6 @@ export default function GeneratorPage() {
   const [generatedDomains, setGeneratedDomains] = useState<string[]>([]);
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
-  const [importSuccess, setImportSuccess] = useState(false);
-  const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
-  const [importResult, setImportResult] = useState<{ imported: number; errors: number } | null>(null);
   
   // Length-based generator
   const [domainLength, setDomainLength] = useState(4);
@@ -350,42 +349,40 @@ export default function GeneratorPage() {
   };
 
   // Add to monitoring (selected domains)
+  const { toast } = useToast();
+  const navigate = useNavigate();
+
   const addToMonitoring = async () => {
     if (selectedDomains.size === 0) return;
-    await importDomainsWithProgress([...selectedDomains]);
+    await createImportJobAndNavigate([...selectedDomains]);
     setSelectedDomains(new Set());
   };
 
   // Add all generated domains
   const addAllToMonitoring = async () => {
     if (generatedDomains.length === 0) return;
-    await importDomainsWithProgress(generatedDomains);
+    await createImportJobAndNavigate(generatedDomains);
   };
 
-  // Import with batch processing and progress
-  const importDomainsWithProgress = async (domains: string[]) => {
+  // Create import job and navigate to tasks
+  const createImportJobAndNavigate = async (domains: string[]) => {
     setImporting(true);
-    setImportProgress({ current: 0, total: domains.length });
-    setImportResult(null);
     
     try {
-      const result = await importDomainsInBatches(
-        domains,
-        50, // batch size
-        (current, total) => setImportProgress({ current, total })
-      );
-      
-      setImportResult(result);
-      setImportSuccess(true);
-      setTimeout(() => {
-        setImportSuccess(false);
-        setImportResult(null);
-      }, 5000);
+      await createImportJob(domains);
+      toast({
+        title: 'Zadanie utworzone',
+        description: `Dodano ${domains.length} domen do kolejki importu. Przejdź do zadań, aby śledzić postęp.`,
+      });
+      navigate('/tasks');
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to import domains');
+      toast({
+        variant: 'destructive',
+        title: 'Błąd',
+        description: err instanceof Error ? err.message : 'Nie udało się utworzyć zadania',
+      });
     } finally {
       setImporting(false);
-      setImportProgress(null);
     }
   };
 
@@ -835,32 +832,6 @@ export default function GeneratorPage() {
             {generatedDomains.length > 0 && (
               <Card>
                 <CardContent className="pt-4 space-y-3">
-                  {/* Progress indicator */}
-                  {importProgress && (
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span>Importowanie...</span>
-                        <span>{importProgress.current} / {importProgress.total}</span>
-                      </div>
-                      <div className="w-full bg-muted rounded-full h-2">
-                        <div 
-                          className="bg-primary h-2 rounded-full transition-all"
-                          style={{ width: `${(importProgress.current / importProgress.total) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* Result message */}
-                  {importResult && (
-                    <div className="text-sm p-2 bg-primary/10 rounded">
-                      Zaimportowano: {importResult.imported}
-                      {importResult.errors > 0 && (
-                        <span className="text-destructive"> (błędy: {importResult.errors})</span>
-                      )}
-                    </div>
-                  )}
-                  
                   {/* Selection info */}
                   {selectedDomains.size > 0 && (
                     <p className="text-sm font-medium">
@@ -878,12 +849,10 @@ export default function GeneratorPage() {
                       >
                         {importing ? (
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        ) : importSuccess ? (
-                          <Check className="h-4 w-4 mr-2" />
                         ) : (
                           <Plus className="h-4 w-4 mr-2" />
                         )}
-                        {importSuccess ? 'Dodano!' : `Dodaj zaznaczone (${selectedDomains.size})`}
+                        {importing ? 'Tworzenie zadania...' : `Dodaj zaznaczone (${selectedDomains.size})`}
                       </Button>
                     ) : (
                       <Button 
@@ -893,12 +862,10 @@ export default function GeneratorPage() {
                       >
                         {importing ? (
                           <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        ) : importSuccess ? (
-                          <Check className="h-4 w-4 mr-2" />
                         ) : (
                           <Plus className="h-4 w-4 mr-2" />
                         )}
-                        {importSuccess ? 'Dodano!' : `Dodaj wszystkie (${generatedDomains.length})`}
+                        {importing ? 'Tworzenie zadania...' : `Dodaj wszystkie (${generatedDomains.length})`}
                       </Button>
                     )}
                     <Button variant="outline" onClick={copyToClipboard} disabled={selectedDomains.size === 0}>
