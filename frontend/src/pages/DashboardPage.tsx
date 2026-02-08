@@ -1,0 +1,539 @@
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '@/hooks/useAuth';
+import { getDomains, addDomain, importDomains, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, type Domain } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Globe, Plus, Upload, RefreshCw, Trash2, Bell, LogOut, Settings, ExternalLink, Loader2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+
+export default function DashboardPage() {
+  const { user, logout } = useAuth();
+  const [domains, setDomains] = useState<Domain[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [newDomain, setNewDomain] = useState('');
+  const [importText, setImportText] = useState('');
+  const [addLoading, setAddLoading] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const [checkingId, setCheckingId] = useState<number | null>(null);
+  const [notifyInfo, setNotifyInfo] = useState<{ topic: string; subscription_url: string } | null>(null);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [notifyDialogOpen, setNotifyDialogOpen] = useState(false);
+  const [testingNtfy, setTestingNtfy] = useState(false);
+  const [testingEmail, setTestingEmail] = useState(false);
+
+  useEffect(() => {
+    loadDomains();
+    loadNotifyInfo();
+  }, []);
+
+  const loadDomains = async () => {
+    try {
+      const result = await getDomains();
+      setDomains(result.domains);
+    } catch (err) {
+      console.error('Failed to load domains:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadNotifyInfo = async () => {
+    try {
+      const result = await getNotificationInfo();
+      setNotifyInfo(result);
+    } catch (err) {
+      console.error('Failed to load notification info:', err);
+    }
+  };
+
+  const handleAddDomain = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDomain.trim()) return;
+
+    setAddLoading(true);
+    try {
+      await addDomain(newDomain);
+      setNewDomain('');
+      setAddDialogOpen(false);
+      await loadDomains();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to add domain');
+    } finally {
+      setAddLoading(false);
+    }
+  };
+
+  const handleImport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!importText.trim()) return;
+
+    setImportLoading(true);
+    try {
+      const result = await importDomains(importText);
+      alert(`Zaimportowano ${result.imported.length} domen`);
+      setImportText('');
+      setImportDialogOpen(false);
+      await loadDomains();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to import domains');
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  const handleCheck = async (id: number) => {
+    setCheckingId(id);
+    try {
+      await checkDomain(id);
+      await loadDomains();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to check domain');
+    } finally {
+      setCheckingId(null);
+    }
+  };
+
+  const handleDelete = async (id: number) => {
+    if (!confirm('Czy na pewno chcesz usunąć tę domenę?')) return;
+    
+    try {
+      await deleteDomain(id);
+      await loadDomains();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete domain');
+    }
+  };
+
+  const formatDate = (dateStr: string | null) => {
+    if (!dateStr) return 'Brak danych';
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('pl-PL');
+  };
+
+  const getDaysUntilExpiry = (dateStr: string | null) => {
+    if (!dateStr) return null;
+    const expiry = new Date(dateStr);
+    const today = new Date();
+    const diff = Math.ceil((expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+    return diff;
+  };
+
+  const getExpiryBadge = (domain: Domain) => {
+    if (!domain.is_registered) {
+      return <Badge variant="success">Dostępna!</Badge>;
+    }
+    
+    const days = getDaysUntilExpiry(domain.expiry_date);
+    if (days === null) {
+      return <Badge variant="secondary">Brak daty</Badge>;
+    }
+    if (days < 0) {
+      return <Badge variant="destructive">Wygasła</Badge>;
+    }
+    if (days <= 7) {
+      return <Badge variant="destructive">{days} dni</Badge>;
+    }
+    if (days <= 30) {
+      return <Badge variant="warning">{days} dni</Badge>;
+    }
+    return <Badge variant="outline">{days} dni</Badge>;
+  };
+
+  const registeredCount = domains.filter(d => d.is_registered).length;
+  const availableCount = domains.filter(d => !d.is_registered).length;
+  const expiringCount = domains.filter(d => {
+    const days = getDaysUntilExpiry(d.expiry_date);
+    return days !== null && days <= 30 && d.is_registered;
+  }).length;
+
+  return (
+    <div className="min-h-screen bg-muted/30">
+      {/* Header */}
+      <header className="bg-background border-b">
+        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-primary rounded-lg p-2">
+              <Globe className="h-6 w-6 text-primary-foreground" />
+            </div>
+            <h1 className="text-xl font-bold">DomainAlert</h1>
+          </div>
+          <div className="flex items-center gap-4">
+            <Dialog open={notifyDialogOpen} onOpenChange={setNotifyDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Bell className="h-4 w-4 mr-2" />
+                  Powiadomienia
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Powiadomienia Push</DialogTitle>
+                  <DialogDescription>
+                    Zasubskrybuj powiadomienia przez ntfy
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    Aby otrzymywać powiadomienia o dostępnych domenach, zainstaluj aplikację ntfy i zasubskrybuj poniższy temat:
+                  </p>
+                  {notifyInfo && (
+                    <div className="space-y-2">
+                      <Label>Temat ntfy</Label>
+                      <div className="flex gap-2">
+                        <Input value={notifyInfo.topic} readOnly />
+                        <Button
+                          variant="outline"
+                          onClick={() => navigator.clipboard.writeText(notifyInfo.topic)}
+                        >
+                          Kopiuj
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <a href="https://ntfy.sh" target="_blank" rel="noopener noreferrer">
+                      <Button variant="outline" size="sm">
+                        <ExternalLink className="h-4 w-4 mr-2" />
+                        ntfy.sh
+                      </Button>
+                    </a>
+                    {notifyInfo && (
+                      <a href={notifyInfo.subscription_url} target="_blank" rel="noopener noreferrer">
+                        <Button variant="outline" size="sm">
+                          <ExternalLink className="h-4 w-4 mr-2" />
+                          Otwórz temat
+                        </Button>
+                      </a>
+                    )}
+                  </div>
+                  <div className="border-t pt-4 mt-4">
+                    <Label className="mb-2 block">Testuj powiadomienia</Label>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={testingNtfy}
+                        onClick={async () => {
+                          setTestingNtfy(true);
+                          try {
+                            const result = await testNtfy();
+                            if (result.success) {
+                              alert('Powiadomienie ntfy wysłane!');
+                            } else {
+                              alert('Błąd: ' + (result.error || 'Nieznany błąd'));
+                            }
+                          } catch (err) {
+                            alert(err instanceof Error ? err.message : 'Błąd');
+                          } finally {
+                            setTestingNtfy(false);
+                          }
+                        }}
+                      >
+                        {testingNtfy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Bell className="h-4 w-4 mr-2" />}
+                        Test ntfy
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={testingEmail}
+                        onClick={async () => {
+                          setTestingEmail(true);
+                          try {
+                            const result = await testEmail();
+                            if (result.success) {
+                              alert('Email testowy wysłany!');
+                            } else {
+                              alert('Błąd: ' + (result.error || 'Nieznany błąd'));
+                            }
+                          } catch (err) {
+                            alert(err instanceof Error ? err.message : 'Błąd');
+                          } finally {
+                            setTestingEmail(false);
+                          }
+                        }}
+                      >
+                        {testingEmail ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Bell className="h-4 w-4 mr-2" />}
+                        Test Email
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+            {user?.is_admin && (
+              <Link to="/admin">
+                <Button variant="outline" size="sm">
+                  <Settings className="h-4 w-4 mr-2" />
+                  Admin
+                </Button>
+              </Link>
+            )}
+            <span className="text-sm text-muted-foreground">{user?.email}</span>
+            <Button variant="ghost" size="sm" onClick={logout}>
+              <LogOut className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main content */}
+      <main className="container mx-auto px-4 py-8">
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Wszystkie domeny</CardDescription>
+              <CardTitle className="text-3xl">{domains.length}</CardTitle>
+            </CardHeader>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Zarejestrowane</CardDescription>
+              <CardTitle className="text-3xl">{registeredCount}</CardTitle>
+            </CardHeader>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Dostępne</CardDescription>
+              <CardTitle className="text-3xl text-green-600">{availableCount}</CardTitle>
+            </CardHeader>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>Wygasają w 30 dni</CardDescription>
+              <CardTitle className="text-3xl text-orange-600">{expiringCount}</CardTitle>
+            </CardHeader>
+          </Card>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-4 mb-6">
+          <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="h-4 w-4 mr-2" />
+                Dodaj domenę
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <form onSubmit={handleAddDomain}>
+                <DialogHeader>
+                  <DialogTitle>Dodaj domenę</DialogTitle>
+                  <DialogDescription>
+                    Wprowadź nazwę domeny do monitorowania
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="py-4">
+                  <Label htmlFor="domain">Domena</Label>
+                  <Input
+                    id="domain"
+                    placeholder="example.com"
+                    value={newDomain}
+                    onChange={(e) => setNewDomain(e.target.value)}
+                    className="mt-2"
+                  />
+                </div>
+                <DialogFooter>
+                  <Button type="submit" disabled={addLoading}>
+                    {addLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Sprawdzanie...
+                      </>
+                    ) : (
+                      'Dodaj'
+                    )}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
+            <DialogTrigger asChild>
+              <Button variant="outline">
+                <Upload className="h-4 w-4 mr-2" />
+                Importuj z listy
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <form onSubmit={handleImport}>
+                <DialogHeader>
+                  <DialogTitle>Importuj domeny</DialogTitle>
+                  <DialogDescription>
+                    Wklej listę domen oddzielonych przecinkami, spacjami lub nowymi liniami
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="py-4">
+                  <Label htmlFor="import">Lista domen</Label>
+                  <Textarea
+                    id="import"
+                    placeholder="example.com, test.pl&#10;another-domain.net"
+                    value={importText}
+                    onChange={(e) => setImportText(e.target.value)}
+                    className="mt-2 h-32"
+                  />
+                </div>
+                <DialogFooter>
+                  <Button type="submit" disabled={importLoading}>
+                    {importLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Importowanie...
+                      </>
+                    ) : (
+                      'Importuj'
+                    )}
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          <Button variant="outline" onClick={loadDomains}>
+            <RefreshCw className="h-4 w-4 mr-2" />
+            Odśwież
+          </Button>
+        </div>
+
+        {/* Domains table */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Lista domen</CardTitle>
+            <CardDescription>
+              Domeny posortowane wg daty wygaśnięcia
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="flex justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : domains.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                Brak domen. Dodaj pierwszą domenę do monitorowania.
+              </div>
+            ) : (
+              <Tabs defaultValue="all">
+                <TabsList>
+                  <TabsTrigger value="all">Wszystkie ({domains.length})</TabsTrigger>
+                  <TabsTrigger value="available">Dostępne ({availableCount})</TabsTrigger>
+                  <TabsTrigger value="expiring">Wygasające ({expiringCount})</TabsTrigger>
+                </TabsList>
+                <TabsContent value="all">
+                  <DomainTable 
+                    domains={domains} 
+                    onCheck={handleCheck} 
+                    onDelete={handleDelete}
+                    checkingId={checkingId}
+                    formatDate={formatDate}
+                    getExpiryBadge={getExpiryBadge}
+                  />
+                </TabsContent>
+                <TabsContent value="available">
+                  <DomainTable 
+                    domains={domains.filter(d => !d.is_registered)} 
+                    onCheck={handleCheck} 
+                    onDelete={handleDelete}
+                    checkingId={checkingId}
+                    formatDate={formatDate}
+                    getExpiryBadge={getExpiryBadge}
+                  />
+                </TabsContent>
+                <TabsContent value="expiring">
+                  <DomainTable 
+                    domains={domains.filter(d => {
+                      const days = getDaysUntilExpiry(d.expiry_date);
+                      return days !== null && days <= 30 && d.is_registered;
+                    })} 
+                    onCheck={handleCheck} 
+                    onDelete={handleDelete}
+                    checkingId={checkingId}
+                    formatDate={formatDate}
+                    getExpiryBadge={getExpiryBadge}
+                  />
+                </TabsContent>
+              </Tabs>
+            )}
+          </CardContent>
+        </Card>
+      </main>
+    </div>
+  );
+}
+
+interface DomainTableProps {
+  domains: Domain[];
+  onCheck: (id: number) => void;
+  onDelete: (id: number) => void;
+  checkingId: number | null;
+  formatDate: (date: string | null) => string;
+  getExpiryBadge: (domain: Domain) => React.ReactNode;
+}
+
+function DomainTable({ domains, onCheck, onDelete, checkingId, formatDate, getExpiryBadge }: DomainTableProps) {
+  if (domains.length === 0) {
+    return (
+      <div className="text-center py-8 text-muted-foreground">
+        Brak domen w tej kategorii
+      </div>
+    );
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Domena</TableHead>
+          <TableHead>Status</TableHead>
+          <TableHead>Data wygaśnięcia</TableHead>
+          <TableHead>Ostatnie sprawdzenie</TableHead>
+          <TableHead>Dodane przez</TableHead>
+          <TableHead className="text-right">Akcje</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {domains.map((domain) => (
+          <TableRow key={domain.id}>
+            <TableCell className="font-medium">{domain.domain}</TableCell>
+            <TableCell>{getExpiryBadge(domain)}</TableCell>
+            <TableCell>{formatDate(domain.expiry_date)}</TableCell>
+            <TableCell>{formatDate(domain.last_checked)}</TableCell>
+            <TableCell className="text-muted-foreground">{domain.added_by_email || '-'}</TableCell>
+            <TableCell className="text-right">
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onCheck(domain.id)}
+                  disabled={checkingId === domain.id}
+                >
+                  {checkingId === domain.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onDelete(domain.id)}
+                >
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                </Button>
+              </div>
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
