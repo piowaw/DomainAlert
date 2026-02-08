@@ -50,10 +50,10 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // 50 parallel workers × 100 batch × 50 concurrent RDAP = massive throughput
-  // MySQL handles concurrent writes natively — no locking issues
-  const NUM_WORKERS = 50;
-  const BATCH_SIZE = 100;
+  // 10 workers × 2000 batch = fewer DB connections, massive batches
+  // Each worker: claims 2000 domains, does 200 concurrent RDAP in memory, flushes once to DB
+  const NUM_WORKERS = 10;
+  const BATCH_SIZE = 2000;
   
   useEffect(() => {
     const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'processing');

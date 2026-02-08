@@ -122,6 +122,9 @@ try {
         case 'fix-config':
             handleFixConfig();
             break;
+        case 'deploy-sync':
+            handleDeploySync();
+            break;
         default:
             jsonResponse(['error' => 'Not found'], 404);
     }
@@ -798,13 +801,13 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         jsonResponse(['job' => $job]);
     }
     
-    // Process a batch of a pending job — MySQL handles concurrency natively.
-    // No retry loops needed! Multiple workers can write simultaneously.
+    // Process a batch — claim BIG batch, do ALL RDAP in memory, flush to DB once.
+    // 10 workers × 2000 batch × 200 concurrent RDAP = fast with few DB connections.
     if ($action === 'process' && $method === 'POST') {
         $jobId = $input['job_id'] ?? 0;
-        $batchSize = min(200, max(1, (int)($input['batch_size'] ?? 100)));
+        $batchSize = min(5000, max(1, (int)($input['batch_size'] ?? 2000)));
         
-        // === STEP 1: Atomic claim — single UPDATE with row-level lock ===
+        // === STEP 1: Atomic claim ===
         $db->beginTransaction();
         $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND status IN ('pending', 'processing') AND processed < total FOR UPDATE");
         $stmt->execute([$jobId]);
@@ -823,64 +826,68 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         
         $db->prepare("UPDATE jobs SET processed = ?, status = 'processing', updated_at = NOW() WHERE id = ?")
            ->execute([$claimEnd, $jobId]);
-        $db->commit(); // release row lock immediately
+        $db->commit(); // release lock fast
         
-        // === STEP 2: RDAP lookups — pure network, no DB ===
-        $rdap = new RdapEngine(50); // 50 concurrent RDAP per worker (MySQL can handle it)
+        // === STEP 2: ALL RDAP in memory — zero DB during lookups ===
+        $rdap = new RdapEngine(200); // 200 concurrent RDAP per worker
         $jobDataDecoded = json_decode($job['data'], true);
         $batchErrors = 0;
+        $insertBuffer = [];
+        $updateBuffer = [];
         
         if ($job['type'] === 'import') {
             $domainList = $jobDataDecoded;
             $batch = array_slice($domainList, $claimStart, $claimEnd - $claimStart);
             
-            // Clean domain names
             $cleanNames = [];
             foreach ($batch as $raw) {
                 $name = strtolower(trim($raw));
                 $name = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $name);
                 $name = rtrim($name, '/');
-                if (empty($name) || !str_contains($name, '.')) {
-                    $batchErrors++;
-                    continue;
-                }
+                if (empty($name) || !str_contains($name, '.')) { $batchErrors++; continue; }
                 $cleanNames[] = $name;
             }
             
-            // Filter existing (read — no lock contention in MySQL)
+            // Single quick read to filter existing
             $toCheck = $cleanNames;
             if (!empty($cleanNames)) {
                 $existing = [];
-                $ph = implode(',', array_fill(0, count($cleanNames), '?'));
-                $s = $db->prepare("SELECT domain FROM domains WHERE domain IN ($ph)");
-                $s->execute($cleanNames);
-                foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $d) $existing[$d] = true;
+                foreach (array_chunk($cleanNames, 10000) as $chunk) {
+                    $ph = implode(',', array_fill(0, count($chunk), '?'));
+                    $s = $db->prepare("SELECT domain FROM domains WHERE domain IN ($ph)");
+                    $s->execute($chunk);
+                    foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $d) $existing[$d] = true;
+                }
                 $toCheck = array_values(array_filter($cleanNames, fn($n) => !isset($existing[$n])));
             }
             
-            // Parallel RDAP (pure network, no DB)
+            // RDAP lookups — all in memory, zero DB
             if (!empty($toCheck)) {
                 $rdapResults = $rdap->lookupBatch($toCheck);
                 
+                $fallbackCount = 0;
                 foreach ($toCheck as $name) {
-                    if (($rdapResults[$name] ?? null) === null) {
-                        try {
-                            $rdapResults[$name] = $whois->lookup($name);
-                        } catch (Exception $e) {
-                            $rdapResults[$name] = ['is_registered' => false, 'expiry_date' => null];
-                            $batchErrors++;
-                        }
+                    if (($rdapResults[$name] ?? null) === null && $fallbackCount < 20) {
+                        try { $rdapResults[$name] = $whois->lookup($name); $fallbackCount++; }
+                        catch (Exception $e) { $rdapResults[$name] = ['is_registered' => false, 'expiry_date' => null]; $batchErrors++; }
                     }
                 }
                 
-                // === STEP 3: Batch INSERT — MySQL handles concurrent writes natively ===
-                $db->beginTransaction();
-                $ins = $db->prepare("INSERT IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, NOW(), ?)");
+                // Buffer in memory
                 foreach ($toCheck as $name) {
                     $data = $rdapResults[$name] ?? null;
                     if ($data) {
-                        $ins->execute([$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0, $user['id']]);
+                        $insertBuffer[] = [$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0];
                     }
+                }
+            }
+            
+            // === STEP 3: Single DB flush ===
+            if (!empty($insertBuffer)) {
+                $db->beginTransaction();
+                $ins = $db->prepare("INSERT IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, NOW(), ?)");
+                foreach ($insertBuffer as $row) {
+                    $ins->execute([$row[0], $row[1], $row[2], $user['id']]);
                 }
                 $db->commit();
             }
@@ -890,31 +897,38 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
             $batchIds = array_slice($domainIds, $claimStart, $claimEnd - $claimStart);
             
             if (!empty($batchIds)) {
-                $ph = implode(',', array_fill(0, count($batchIds), '?'));
-                $s = $db->prepare("SELECT * FROM domains WHERE id IN ($ph)");
-                $s->execute($batchIds);
                 $rows = [];
-                foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) $rows[$row['domain']] = $row;
+                foreach (array_chunk($batchIds, 10000) as $chunk) {
+                    $ph = implode(',', array_fill(0, count($chunk), '?'));
+                    $s = $db->prepare("SELECT * FROM domains WHERE id IN ($ph)");
+                    $s->execute($chunk);
+                    foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) $rows[$row['domain']] = $row;
+                }
                 
                 if (!empty($rows)) {
                     $names = array_keys($rows);
                     $rdapResults = $rdap->lookupBatch($names);
                     
+                    $fallbackCount = 0;
                     foreach ($names as $name) {
-                        if (($rdapResults[$name] ?? null) === null) {
-                            try { $rdapResults[$name] = $whois->lookup($name); } catch (Exception $e) { $batchErrors++; }
+                        if (($rdapResults[$name] ?? null) === null && $fallbackCount < 20) {
+                            try { $rdapResults[$name] = $whois->lookup($name); $fallbackCount++; } catch (Exception $e) { $batchErrors++; }
                         }
                     }
                     
-                    $db->beginTransaction();
-                    $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE id = ?");
                     foreach ($rows as $name => $row) {
                         $data = $rdapResults[$name] ?? null;
                         if ($data) {
-                            $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
+                            $updateBuffer[] = [$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']];
                         }
                     }
-                    $db->commit();
+                    
+                    if (!empty($updateBuffer)) {
+                        $db->beginTransaction();
+                        $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE id = ?");
+                        foreach ($updateBuffer as $row) { $upd->execute($row); }
+                        $db->commit();
+                    }
                 }
             }
         }
@@ -1631,6 +1645,71 @@ PHPCONFIG;
             echo "✗ MySQL connection failed: " . $e->getMessage() . "\n";
         }
     }
+    echo "</pre>";
+    exit;
+}
+
+// ── Force re-deploy backend files from git repo — visit /api/deploy-sync ──
+function handleDeploySync(): void {
+    restore_error_handler();
+    restore_exception_handler();
+    header_remove('Content-Type');
+    header('Content-Type: text/html; charset=utf-8');
+    echo "<pre style='font-family:monospace;font-size:14px;padding:20px;'>";
+    $nl = "<br>\n";
+    
+    echo "=== Deploy Sync ===$nl$nl";
+    
+    $docRoot = $_SERVER['DOCUMENT_ROOT'] ?? dirname(__DIR__);
+    $backendDir = $docRoot . '/backend';
+    
+    echo "Document root: $docRoot$nl";
+    echo "Backend dir: $backendDir$nl$nl";
+    
+    if (!is_dir($backendDir)) {
+        echo "✗ backend/ directory not found$nl";
+        echo "</pre>";
+        exit;
+    }
+    
+    echo "── Copying backend/* to document root ──$nl";
+    
+    $filesToCopy = ['config.php','router.php','worker.php','migrate.php','migrate-to-mysql.php','fix-config.php','.htaccess'];
+    $dirsToCopy = ['api','services','cron','public'];
+    
+    foreach ($filesToCopy as $file) {
+        $src = "$backendDir/$file";
+        $dst = "$docRoot/$file";
+        if (file_exists($src)) {
+            $r = copy($src, $dst);
+            echo ($r ? '✓' : '✗') . " $file$nl";
+        } else {
+            echo "⏭ $file$nl";
+        }
+    }
+    
+    foreach ($dirsToCopy as $dir) {
+        $srcDir = "$backendDir/$dir";
+        if (!is_dir($srcDir)) { echo "⏭ $dir/$nl"; continue; }
+        $count = 0;
+        $it = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($srcDir, RecursiveDirectoryIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST
+        );
+        foreach ($it as $item) {
+            $target = "$docRoot/$dir/" . $it->getSubPathname();
+            if ($item->isDir()) {
+                if (!is_dir($target)) mkdir($target, 0755, true);
+            } else {
+                copy($item->getPathname(), $target);
+                $count++;
+            }
+        }
+        echo "✓ $dir/ ($count files)$nl";
+    }
+    
+    echo "{$nl}=== Sync complete ===$nl";
+    echo "All files updated. Visit /api/migrate to verify MySQL.$nl";
     echo "</pre>";
     exit;
 }
