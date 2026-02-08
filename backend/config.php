@@ -30,15 +30,17 @@ define('JWT_EXPIRY', 86400 * 7); // 7 days
 define('OLLAMA_URL', 'http://localhost:11434');
 define('OLLAMA_MODEL', 'deepseek-r1:1.5b'); // Zmień na inny model jeśli chcesz, np. llama3, mistral, phi3
 
-// CORS headers
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization');
-header('Content-Type: application/json');
+// CORS headers — only for API requests (not standalone scripts)
+if (!defined('SKIP_HEADERS')) {
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type, Authorization');
+    header('Content-Type: application/json');
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
+    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+        http_response_code(200);
+        exit();
+    }
 }
 
 // Initialize database — MySQL

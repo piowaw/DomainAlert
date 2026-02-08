@@ -6,6 +6,9 @@
  * Usage: php migrate.php  OR  visit /migrate.php in browser
  */
 
+// Don't send JSON/CORS headers for this standalone script
+define('SKIP_HEADERS', true);
+
 require_once __DIR__ . '/config.php';
 
 $isCli = php_sapi_name() === 'cli';

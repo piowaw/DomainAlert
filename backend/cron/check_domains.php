@@ -14,6 +14,8 @@
  * Expected: 100-500 domains/sec
  */
 
+define('SKIP_HEADERS', true);
+
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../services/WhoisService.php';
 require_once __DIR__ . '/../services/NotificationService.php';

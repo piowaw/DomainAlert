@@ -10,6 +10,9 @@
  * Usage: Visit https://yourdomain.com/migrate-to-mysql.php
  */
 
+// Don't send JSON/CORS headers for this standalone script
+define('SKIP_HEADERS', true);
+
 require_once __DIR__ . '/config.php';
 
 // Prevent accidental re-runs in production — delete this file after migration
@@ -44,6 +47,15 @@ if (!file_exists($sqlitePath)) {
         echo "{$nl}If you don't have existing data to migrate, you're done — MySQL is ready!$nl";
         exit(0);
     }
+}
+
+if (!extension_loaded('pdo_sqlite')) {
+    echo "✗ pdo_sqlite extension is not installed on this server.$nl";
+    echo "  You need to enable it in Plesk: PHP Settings → Extensions → pdo_sqlite$nl";
+    echo "  Or ask your hosting provider to enable it.$nl$nl";
+    echo "  Alternatively, you can export your SQLite data on a local machine$nl";
+    echo "  and import the SQL dump into MySQL via phpMyAdmin.$nl";
+    exit(1);
 }
 
 try {
