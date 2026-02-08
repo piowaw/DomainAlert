@@ -1,31 +1,143 @@
 <?php
 /**
- * DomainAlert Background Job Worker
+ * DomainAlert Background Job Worker — FAST parallel processing
  * 
- * Processes pending jobs in the background.
- * Run continuously with:    php worker.php daemon
- * Run once:                 php worker.php
+ * Uses curl_multi for parallel RDAP lookups (20-50 domains at once)
  * 
- * For production, set up with cron (every minute):
- * * * * * * cd /path/to/backend && php worker.php >> /var/log/domainalert-worker.log 2>&1
- * 
- * Or run as a daemon with supervisor/systemd
+ * Run continuously:  php worker.php daemon
+ * Run once:          php worker.php
+ * Custom parallel:   php worker.php daemon --parallel=50
  */
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/services/WhoisService.php';
 
 // Configuration
-define('BATCH_SIZE', 100);          // Domains per batch (increased from 20)
-define('SLEEP_BETWEEN_JOBS', 1);    // Seconds between jobs
-define('SLEEP_NO_JOBS', 10);        // Seconds when no jobs found
-define('RATE_LIMIT_DELAY', 0.2);    // Seconds between WHOIS requests (200ms)
+$parallelSize = 20; // default parallel requests
+foreach ($argv ?? [] as $arg) {
+    if (str_starts_with($arg, '--parallel=')) {
+        $parallelSize = max(1, min(100, (int)substr($arg, 11)));
+    }
+}
 
-$daemonMode = isset($argv[1]) && $argv[1] === 'daemon';
+define('PARALLEL_SIZE', $parallelSize);
+define('SLEEP_NO_JOBS', 5);
 
-function log_message(string $message): void {
-    $timestamp = date('Y-m-d H:i:s');
-    echo "[$timestamp] $message\n";
+$daemonMode = in_array('daemon', $argv ?? []);
+
+// RDAP servers for parallel lookups
+$RDAP_SERVERS = [
+    'com'    => 'https://rdap.verisign.com/com/v1/domain/',
+    'net'    => 'https://rdap.verisign.com/net/v1/domain/',
+    'org'    => 'https://rdap.publicinterestregistry.org/rdap/domain/',
+    'io'     => 'https://rdap.nic.io/domain/',
+    'pl'     => 'https://rdap.dns.pl/domain/',
+    'de'     => 'https://rdap.denic.de/domain/',
+    'eu'     => 'https://rdap.eurid.eu/domain/',
+    'uk'     => 'https://rdap.nominet.uk/uk/domain/',
+    'fr'     => 'https://rdap.nic.fr/domain/',
+    'nl'     => 'https://rdap.sidn.nl/domain/',
+    'xyz'    => 'https://rdap.nic.xyz/domain/',
+    'app'    => 'https://rdap.nic.google/domain/',
+    'dev'    => 'https://rdap.nic.google/domain/',
+    'co'     => 'https://rdap.nic.co/domain/',
+    'me'     => 'https://rdap.nic.me/domain/',
+    'info'   => 'https://rdap.afilias.net/rdap/info/domain/',
+    'biz'    => 'https://rdap.nic.biz/domain/',
+    'online' => 'https://rdap.centralnic.com/online/domain/',
+    'site'   => 'https://rdap.centralnic.com/site/domain/',
+    'ru'     => 'https://rdap.ripn.net/domain/',
+];
+
+function log_msg(string $msg): void {
+    echo "[" . date('Y-m-d H:i:s') . "] $msg\n";
+}
+
+/**
+ * Parallel RDAP lookup using curl_multi
+ * Returns [domainName => parsed_result | null]
+ */
+function parallelRdap(array $domainNames): array {
+    global $RDAP_SERVERS;
+    
+    $results = [];
+    $mh = curl_multi_init();
+    $handles = [];
+    
+    foreach ($domainNames as $name) {
+        $parts = explode('.', $name);
+        $tld = end($parts);
+        $url = $RDAP_SERVERS[$tld] ?? null;
+        
+        if (!$url) {
+            $results[$name] = null; // no RDAP server, will use fallback
+            continue;
+        }
+        
+        $ch = curl_init($url . $name);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 5,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_HTTPHEADER     => ['Accept: application/rdap+json'],
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_ENCODING       => '',
+        ]);
+        
+        curl_multi_add_handle($mh, $ch);
+        $handles[(int)$ch] = ['ch' => $ch, 'domain' => $name];
+    }
+    
+    // Execute all in parallel
+    do {
+        $status = curl_multi_exec($mh, $running);
+        if ($running > 0) curl_multi_select($mh, 0.05);
+    } while ($running > 0 && $status === CURLM_OK);
+    
+    // Collect results
+    foreach ($handles as $info) {
+        $ch = $info['ch'];
+        $name = $info['domain'];
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $body = curl_multi_getcontent($ch);
+        
+        if ($code === 200 && $body) {
+            $json = json_decode($body, true);
+            if ($json) {
+                $r = ['domain' => $name, 'is_registered' => true, 'expiry_date' => null, 'registrar' => null, 'raw' => '', 'error' => null];
+                if (isset($json['events'])) {
+                    foreach ($json['events'] as $ev) {
+                        if ($ev['eventAction'] === 'expiration') {
+                            $r['expiry_date'] = date('Y-m-d', strtotime($ev['eventDate']));
+                            break;
+                        }
+                    }
+                }
+                if (isset($json['entities'])) {
+                    foreach ($json['entities'] as $ent) {
+                        if (in_array('registrar', $ent['roles'] ?? [])) {
+                            $r['registrar'] = $ent['vcardArray'][1][1][3] ?? ($ent['handle'] ?? null);
+                            break;
+                        }
+                    }
+                }
+                $results[$name] = $r;
+            } else {
+                $results[$name] = null;
+            }
+        } elseif ($code === 404) {
+            $results[$name] = ['domain' => $name, 'is_registered' => false, 'expiry_date' => null, 'registrar' => null, 'raw' => '', 'error' => null];
+        } else {
+            $results[$name] = null;
+        }
+        
+        curl_multi_remove_handle($mh, $ch);
+        curl_close($ch);
+    }
+    
+    curl_multi_close($mh);
+    return $results;
 }
 
 function processImportJob(PDO $db, WhoisService $whois, array $job): void {
@@ -34,76 +146,78 @@ function processImportJob(PDO $db, WhoisService $whois, array $job): void {
     $processed = (int)$job['processed'];
     $errors = (int)$job['errors'];
     $userId = $job['user_id'];
+    $total = count($domains);
     
-    log_message("Processing import job #$jobId - {$job['processed']}/{$job['total']} done");
+    log_msg("Import job #$jobId — $processed/$total done, parallel=" . PARALLEL_SIZE);
     
-    // Mark as processing
-    $stmt = $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?");
-    $stmt->execute([$jobId]);
+    $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
     
-    // Get batch of domains to process
-    $batch = array_slice($domains, $processed, BATCH_SIZE);
-    
-    foreach ($batch as $domainName) {
-        try {
-            $domainName = strtolower(trim($domainName));
-            $domainName = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $domainName);
-            $domainName = rtrim($domainName, '/');
-            
-            if (empty($domainName)) {
+    while ($processed < $total) {
+        $batch = array_slice($domains, $processed, PARALLEL_SIZE);
+        
+        // Clean domain names
+        $cleanBatch = [];
+        foreach ($batch as $raw) {
+            $name = strtolower(trim($raw));
+            $name = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $name);
+            $name = rtrim($name, '/');
+            if (empty($name)) {
                 $errors++;
                 $processed++;
                 continue;
             }
-            
-            // Check if domain already exists
-            $checkStmt = $db->prepare("SELECT id FROM domains WHERE domain = ?");
-            $checkStmt->execute([$domainName]);
-            if ($checkStmt->fetch()) {
-                // Domain already exists, skip
-                $processed++;
-                continue;
-            }
-            
-            // Check WHOIS
-            $whoisData = $whois->lookup($domainName);
-            
-            // Insert domain
-            $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
-            $stmt->execute([
-                $domainName,
-                $whoisData['expiry_date'],
-                $whoisData['is_registered'] ? 1 : 0,
-                $userId
-            ]);
-            
-            $processed++;
-            log_message("  ✓ $domainName - " . ($whoisData['is_registered'] ? 'registered' : 'available'));
-            
-            // Rate limiting
-            usleep(RATE_LIMIT_DELAY * 1000000);
-            
-        } catch (Exception $e) {
-            $errors++;
-            $processed++;
-            log_message("  ✗ $domainName - " . $e->getMessage());
+            $cleanBatch[] = $name;
         }
         
-        // Update progress periodically
-        if ($processed % 5 === 0) {
-            $stmt = $db->prepare("UPDATE jobs SET processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?");
-            $stmt->execute([$processed, $errors, $jobId]);
+        // Skip already-existing domains
+        if (!empty($cleanBatch)) {
+            $placeholders = implode(',', array_fill(0, count($cleanBatch), '?'));
+            $stmt = $db->prepare("SELECT domain FROM domains WHERE domain IN ($placeholders)");
+            $stmt->execute($cleanBatch);
+            $existing = array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'domain');
+            
+            $toCheck = array_diff($cleanBatch, $existing);
+            $skipped = count($cleanBatch) - count($toCheck);
+            $processed += $skipped;
+        } else {
+            $toCheck = [];
         }
+        
+        if (empty($toCheck)) {
+            // Update progress
+            $db->prepare("UPDATE jobs SET processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
+            continue;
+        }
+        
+        // Parallel RDAP lookup
+        $rdapResults = parallelRdap(array_values($toCheck));
+        
+        // Insert results, fallback for RDAP misses
+        foreach ($toCheck as $name) {
+            try {
+                $data = $rdapResults[$name] ?? null;
+                if ($data === null) {
+                    $data = $whois->lookup($name); // sequential fallback
+                }
+                
+                $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)")
+                   ->execute([$name, $data['expiry_date'], $data['is_registered'] ? 1 : 0, $userId]);
+                
+                $processed++;
+            } catch (Exception $e) {
+                $errors++;
+                $processed++;
+            }
+        }
+        
+        // Update progress after each batch
+        $pct = $total > 0 ? round($processed / $total * 100) : 0;
+        log_msg("  Job #$jobId: $processed/$total ($pct%) — errors: $errors");
+        $db->prepare("UPDATE jobs SET processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
     }
     
-    // Final update
-    $status = $processed >= count($domains) ? 'completed' : 'processing';
-    $stmt = $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?");
-    $stmt->execute([$status, $processed, $errors, $jobId]);
-    
-    if ($status === 'completed') {
-        log_message("Job #$jobId completed: $processed domains, $errors errors");
-    }
+    $db->prepare("UPDATE jobs SET status = 'completed', processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
+    log_msg("Job #$jobId DONE — $processed domains, $errors errors");
 }
 
 function processWhoisCheckJob(PDO $db, WhoisService $whois, array $job): void {
@@ -112,67 +226,64 @@ function processWhoisCheckJob(PDO $db, WhoisService $whois, array $job): void {
     $domainIds = $data['domain_ids'] ?? [];
     $processed = (int)$job['processed'];
     $errors = (int)$job['errors'];
+    $total = count($domainIds);
     
-    log_message("Processing WHOIS check job #$jobId - {$job['processed']}/{$job['total']} done");
+    log_msg("WHOIS check job #$jobId — $processed/$total done, parallel=" . PARALLEL_SIZE);
     
-    // Mark as processing
-    $stmt = $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?");
-    $stmt->execute([$jobId]);
+    $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
     
-    // Get batch of domains to check
-    $batch = array_slice($domainIds, $processed, BATCH_SIZE);
-    
-    foreach ($batch as $domainId) {
-        try {
-            // Get domain
-            $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
-            $stmt->execute([$domainId]);
-            $domain = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$domain) {
-                $errors++;
-                $processed++;
-                continue;
-            }
-            
-            // Check WHOIS
-            $whoisData = $whois->lookup($domain['domain']);
-            
-            // Update domain
-            $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
-            $stmt->execute([
-                $whoisData['expiry_date'],
-                $whoisData['is_registered'] ? 1 : 0,
-                $domain['id']
-            ]);
-            
-            $processed++;
-            log_message("  ✓ {$domain['domain']} - expires: " . ($whoisData['expiry_date'] ?? 'unknown'));
-            
-            // Rate limiting
-            usleep(RATE_LIMIT_DELAY * 1000000);
-            
-        } catch (Exception $e) {
-            $errors++;
-            $processed++;
-            log_message("  ✗ Domain ID $domainId - " . $e->getMessage());
+    while ($processed < $total) {
+        $batchIds = array_slice($domainIds, $processed, PARALLEL_SIZE);
+        
+        // Fetch domain records
+        $placeholders = implode(',', array_fill(0, count($batchIds), '?'));
+        $stmt = $db->prepare("SELECT * FROM domains WHERE id IN ($placeholders)");
+        $stmt->execute($batchIds);
+        $domainRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Map by name for results
+        $idByName = [];
+        $names = [];
+        foreach ($domainRows as $row) {
+            $names[] = $row['domain'];
+            $idByName[$row['domain']] = $row;
         }
         
-        // Update progress periodically
-        if ($processed % 5 === 0) {
-            $stmt = $db->prepare("UPDATE jobs SET processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?");
-            $stmt->execute([$processed, $errors, $jobId]);
+        // Account for missing domain IDs
+        $missing = count($batchIds) - count($domainRows);
+        $errors += $missing;
+        $processed += $missing;
+        
+        if (!empty($names)) {
+            // Parallel RDAP
+            $rdapResults = parallelRdap($names);
+            
+            foreach ($names as $name) {
+                try {
+                    $whoisData = $rdapResults[$name] ?? null;
+                    if ($whoisData === null) {
+                        $whoisData = $whois->lookup($name);
+                    }
+                    
+                    $row = $idByName[$name];
+                    $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?")
+                       ->execute([$whoisData['expiry_date'] ?? $row['expiry_date'], $whoisData['is_registered'] ? 1 : 0, $row['id']]);
+                    
+                    $processed++;
+                } catch (Exception $e) {
+                    $errors++;
+                    $processed++;
+                }
+            }
         }
+        
+        $pct = $total > 0 ? round($processed / $total * 100) : 0;
+        log_msg("  Job #$jobId: $processed/$total ($pct%) — errors: $errors");
+        $db->prepare("UPDATE jobs SET processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
     }
     
-    // Final update
-    $status = $processed >= count($domainIds) ? 'completed' : 'processing';
-    $stmt = $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?");
-    $stmt->execute([$status, $processed, $errors, $jobId]);
-    
-    if ($status === 'completed') {
-        log_message("Job #$jobId completed: $processed domains checked, $errors errors");
-    }
+    $db->prepare("UPDATE jobs SET status = 'completed', processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
+    log_msg("Job #$jobId DONE — $processed checked, $errors errors");
 }
 
 function getNextJob(PDO $db): ?array {
@@ -180,8 +291,8 @@ function getNextJob(PDO $db): ?array {
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
-// Main loop
-log_message("Starting DomainAlert worker" . ($daemonMode ? " in daemon mode" : ""));
+// ── Main ──
+log_msg("Worker started (parallel=" . PARALLEL_SIZE . ", mode=" . ($daemonMode ? 'daemon' : 'once') . ")");
 
 try {
     $db = initDatabase();
@@ -192,14 +303,14 @@ try {
         
         if (!$job) {
             if ($daemonMode) {
-                log_message("No jobs found, sleeping for " . SLEEP_NO_JOBS . "s");
                 sleep(SLEEP_NO_JOBS);
                 continue;
-            } else {
-                log_message("No pending jobs");
-                break;
             }
+            log_msg("No pending jobs");
+            break;
         }
+        
+        $t = microtime(true);
         
         switch ($job['type']) {
             case 'import':
@@ -209,22 +320,18 @@ try {
                 processWhoisCheckJob($db, $whois, $job);
                 break;
             default:
-                log_message("Unknown job type: {$job['type']}");
-                $stmt = $db->prepare("UPDATE jobs SET status = 'failed', updated_at = datetime('now') WHERE id = ?");
-                $stmt->execute([$job['id']]);
+                log_msg("Unknown job type: {$job['type']}");
+                $db->prepare("UPDATE jobs SET status = 'failed', updated_at = datetime('now') WHERE id = ?")->execute([$job['id']]);
         }
         
-        // Check if job is still processing (not completed)
-        if ($job['status'] !== 'completed') {
-            // Small delay between batches
-            sleep(SLEEP_BETWEEN_JOBS);
-        }
+        $elapsed = round(microtime(true) - $t, 1);
+        log_msg("Finished in {$elapsed}s");
         
-    } while ($daemonMode || ($job && $job['status'] !== 'completed'));
+    } while ($daemonMode);
     
-    log_message("Worker finished");
+    log_msg("Worker stopped");
     
 } catch (Exception $e) {
-    log_message("FATAL ERROR: " . $e->getMessage());
+    log_msg("FATAL: " . $e->getMessage());
     exit(1);
 }
