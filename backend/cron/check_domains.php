@@ -1,175 +1,155 @@
 <?php
 /**
- * Domain expiry checker — parallel RDAP, no artificial delays
+ * Domain expiry checker — MAXIMUM SPEED
  * 
- * Run via cron every minute:
- *   php /path/to/check_domains.php
+ * Uses RdapEngine for massive parallel lookups with multi-process support.
  * 
- * Or continuous daemon:
- *   php /path/to/check_domains.php daemon
+ * Usage:
+ *   php check_domains.php                               # single run, 200 concurrent
+ *   php check_domains.php daemon                        # continuous loop
+ *   php check_domains.php daemon --concurrency=300      # 300 concurrent per process
+ *   php check_domains.php daemon --workers=4            # 4 processes × 200 = 800 concurrent
+ *   php check_domains.php daemon --workers=8 --concurrency=300  # 2400 concurrent
+ * 
+ * Expected: 100-500 domains/sec
  */
 
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../services/WhoisService.php';
 require_once __DIR__ . '/../services/NotificationService.php';
+require_once __DIR__ . '/../services/RdapEngine.php';
 
-$RDAP_SERVERS = [
-    'com' => 'https://rdap.verisign.com/com/v1/domain/',
-    'net' => 'https://rdap.verisign.com/net/v1/domain/',
-    'org' => 'https://rdap.publicinterestregistry.org/rdap/domain/',
-    'io'  => 'https://rdap.nic.io/domain/',
-    'pl'  => 'https://rdap.dns.pl/domain/',
-    'de'  => 'https://rdap.denic.de/domain/',
-    'eu'  => 'https://rdap.eurid.eu/domain/',
-    'uk'  => 'https://rdap.nominet.uk/uk/domain/',
-    'fr'  => 'https://rdap.nic.fr/domain/',
-    'nl'  => 'https://rdap.sidn.nl/domain/',
-    'xyz' => 'https://rdap.nic.xyz/domain/',
-    'app' => 'https://rdap.nic.google/domain/',
-    'dev' => 'https://rdap.nic.google/domain/',
-    'co'  => 'https://rdap.nic.co/domain/',
-    'me'  => 'https://rdap.nic.me/domain/',
-    'info'=> 'https://rdap.afilias.net/rdap/info/domain/',
-    'biz' => 'https://rdap.nic.biz/domain/',
-    'ru'  => 'https://rdap.ripn.net/domain/',
-];
+// ── Parse CLI args ──
+$concurrency = 200;
+$numWorkers = 1;
+$daemonMode = false;
+$staleBatch = 5000;
 
-define('PARALLEL', 30);
-define('STALE_BATCH', 200);
-
-$daemonMode = in_array('daemon', $argv ?? []);
-
-function log_msg(string $m): void { echo "[" . date('Y-m-d H:i:s') . "] $m\n"; }
-
-function parallelRdap(array $domainRows): array {
-    global $RDAP_SERVERS;
-    $mh = curl_multi_init();
-    $handles = [];
-    $results = [];
-
-    foreach ($domainRows as $row) {
-        $name = $row['domain'];
-        $tld = substr($name, strrpos($name, '.') + 1);
-        $url = $RDAP_SERVERS[$tld] ?? null;
-        if (!$url) { $results[$name] = null; continue; }
-
-        $ch = curl_init($url . $name);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 5,
-            CURLOPT_CONNECTTIMEOUT => 3,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_HTTPHEADER     => ['Accept: application/rdap+json'],
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_ENCODING       => '',
-        ]);
-        curl_multi_add_handle($mh, $ch);
-        $handles[(int)$ch] = ['ch' => $ch, 'domain' => $name];
-    }
-
-    do {
-        $status = curl_multi_exec($mh, $running);
-        if ($running > 0) curl_multi_select($mh, 0.05);
-    } while ($running > 0 && $status === CURLM_OK);
-
-    foreach ($handles as $info) {
-        $ch = $info['ch'];
-        $name = $info['domain'];
-        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $body = curl_multi_getcontent($ch);
-
-        if ($code === 200 && $body) {
-            $json = json_decode($body, true);
-            $expiry = null;
-            if (isset($json['events'])) {
-                foreach ($json['events'] as $ev) {
-                    if ($ev['eventAction'] === 'expiration') {
-                        $expiry = date('Y-m-d', strtotime($ev['eventDate']));
-                        break;
-                    }
-                }
-            }
-            $results[$name] = ['is_registered' => true, 'expiry_date' => $expiry];
-        } elseif ($code === 404) {
-            $results[$name] = ['is_registered' => false, 'expiry_date' => null];
-        } else {
-            $results[$name] = null; // fallback needed
-        }
-        curl_multi_remove_handle($mh, $ch);
-        curl_close($ch);
-    }
-    curl_multi_close($mh);
-    return $results;
+foreach ($argv ?? [] as $arg) {
+    if ($arg === 'daemon') $daemonMode = true;
+    if (str_starts_with($arg, '--concurrency=')) $concurrency = max(10, min(1000, (int)substr($arg, 14)));
+    if (str_starts_with($arg, '--workers=')) $numWorkers = max(1, min(32, (int)substr($arg, 10)));
+    if (str_starts_with($arg, '--batch=')) $staleBatch = max(100, (int)substr($arg, 8));
 }
 
-function processBatch(PDO $db, WhoisService $whois, NotificationService $notifications, array $domainRows): int {
-    $chunks = array_chunk($domainRows, PARALLEL);
-    $checked = 0;
+function log_msg(string $m): void {
+    $mem = round(memory_get_usage(true) / 1024 / 1024, 1);
+    echo "[" . date('Y-m-d H:i:s') . "] [{$mem}MB] $m\n";
+}
 
-    foreach ($chunks as $chunk) {
-        $rdap = parallelRdap($chunk);
-
-        foreach ($chunk as $row) {
-            $name = $row['domain'];
-            $data = $rdap[$name] ?? null;
-
-            if ($data === null) {
-                try { $data = $whois->lookup($name); } catch (Exception $e) { continue; }
+function processBatch(PDO $db, WhoisService $whois, RdapEngine $rdap, NotificationService $notifications, array $domainRows, int $numWorkers): int {
+    if (empty($domainRows)) return 0;
+    
+    $names = array_column($domainRows, 'domain');
+    $rowByName = [];
+    foreach ($domainRows as $row) {
+        $rowByName[$row['domain']] = $row;
+    }
+    
+    // RDAP lookup (multi-process if configured)
+    $t = microtime(true);
+    if ($numWorkers > 1) {
+        $rdapResults = $rdap->lookupMultiProcess($names, $numWorkers);
+    } else {
+        $rdapResults = $rdap->lookupBatch($names);
+    }
+    $elapsed = round(microtime(true) - $t, 2);
+    
+    $rdapHits = count(array_filter($rdapResults, fn($r) => $r !== null));
+    $fallbacks = 0;
+    
+    // Fallback for RDAP misses
+    foreach ($names as $name) {
+        if (($rdapResults[$name] ?? null) === null) {
+            try {
+                $rdapResults[$name] = $whois->lookup($name);
+                $fallbacks++;
+            } catch (Exception $e) {
+                // skip
             }
-
-            $wasRegistered = (bool)$row['is_registered'];
-            $isNowAvailable = !$data['is_registered'];
-
-            $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?")
-               ->execute([$data['expiry_date'] ?? $row['expiry_date'], $data['is_registered'] ? 1 : 0, $row['id']]);
-
-            if ($wasRegistered && $isNowAvailable) {
-                log_msg(">>> AVAILABLE: $name");
-                $notifications->notifyDomainAvailable($row['id'], $name);
-            }
-            $checked++;
         }
     }
+    
+    // Batch update via transaction
+    $db->beginTransaction();
+    $updateStmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+    $checked = 0;
+    
+    foreach ($domainRows as $row) {
+        $name = $row['domain'];
+        $data = $rdapResults[$name] ?? null;
+        if ($data === null) continue;
+        
+        $wasRegistered = (bool)$row['is_registered'];
+        $isNowAvailable = !$data['is_registered'];
+        
+        $updateStmt->execute([
+            $data['expiry_date'] ?? $row['expiry_date'],
+            $data['is_registered'] ? 1 : 0,
+            $row['id'],
+        ]);
+        
+        if ($wasRegistered && $isNowAvailable) {
+            log_msg(">>> AVAILABLE: $name");
+            $notifications->notifyDomainAvailable($row['id'], $name);
+        }
+        $checked++;
+    }
+    $db->commit();
+    
+    $dps = count($names) > 0 && $elapsed > 0 ? round(count($names) / $elapsed) : 0;
+    log_msg("  {$checked} checked | {$rdapHits} RDAP/{$fallbacks} fallback | {$dps} domains/sec | {$elapsed}s");
+    
     return $checked;
 }
 
 // ── Main ──
+log_msg("=== Domain Checker ===");
+log_msg("Concurrency: $concurrency | Workers: $numWorkers | Stale batch: $staleBatch");
+
 $db = initDatabase();
+$db->exec("PRAGMA journal_mode=WAL");
+$db->exec("PRAGMA synchronous=NORMAL");
+$db->exec("PRAGMA cache_size=-64000");
+$db->exec("PRAGMA temp_store=MEMORY");
+
 $whois = new WhoisService();
+$rdap = new RdapEngine($concurrency);
 $notifications = new NotificationService($db);
 
 do {
-    $t = microtime(true);
-
-    // 1) Expiring / expired domains (registered, expiry <= today)
+    $cycleStart = microtime(true);
+    $totalChecked = 0;
+    
+    // 1) Expiring / expired domains
     $today = date('Y-m-d');
     $stmt = $db->prepare("SELECT * FROM domains WHERE is_registered = 1 AND expiry_date <= ? ORDER BY expiry_date ASC");
     $stmt->execute([$today]);
     $expiring = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
+    
     if (count($expiring) > 0) {
         log_msg("Checking " . count($expiring) . " expiring/expired domains...");
-        $n = processBatch($db, $whois, $notifications, $expiring);
-        log_msg("  Done: $n checked");
+        $totalChecked += processBatch($db, $whois, $rdap, $notifications, $expiring, $numWorkers);
     }
-
-    // 2) Stale domains (not checked in 24h)
-    $stmt = $db->query("SELECT * FROM domains WHERE last_checked < datetime('now', '-24 hours') OR last_checked IS NULL LIMIT " . STALE_BATCH);
+    
+    // 2) Stale domains (not checked in 24h) — large batches
+    $stmt = $db->prepare("SELECT * FROM domains WHERE last_checked < datetime('now', '-24 hours') OR last_checked IS NULL LIMIT ?");
+    $stmt->execute([$staleBatch]);
     $stale = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
+    
     if (count($stale) > 0) {
         log_msg("Refreshing " . count($stale) . " stale domains...");
-        $n = processBatch($db, $whois, $notifications, $stale);
-        log_msg("  Done: $n refreshed");
+        $totalChecked += processBatch($db, $whois, $rdap, $notifications, $stale, $numWorkers);
     }
-
-    $elapsed = round(microtime(true) - $t, 1);
-    log_msg("Cycle complete in {$elapsed}s (" . count($expiring) . " expiring, " . count($stale) . " stale)");
-
+    
+    $cycleTime = round(microtime(true) - $cycleStart, 1);
+    log_msg("Cycle done: {$totalChecked} domains in {$cycleTime}s (" . count($expiring) . " expiring, " . count($stale) . " stale)");
+    
     if ($daemonMode && count($stale) === 0 && count($expiring) === 0) {
-        sleep(30); // nothing to do, wait 30s
+        log_msg("Nothing to do, sleeping 30s...");
+        sleep(30);
     }
-
+    
 } while ($daemonMode);
 
 log_msg("Done.");
