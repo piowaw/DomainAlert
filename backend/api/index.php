@@ -50,6 +50,7 @@ try {
                 type VARCHAR(50) NOT NULL,
                 status VARCHAR(20) DEFAULT 'pending',
                 total INT DEFAULT 0,
+                claimed INT DEFAULT 0,
                 processed INT DEFAULT 0,
                 errors INT DEFAULT 0,
                 data LONGTEXT,
@@ -1563,7 +1564,7 @@ function initDatabase(): PDO {
     $db->exec("CREATE TABLE IF NOT EXISTS jobs (
         id INT PRIMARY KEY AUTO_INCREMENT, user_id INT NOT NULL,
         type VARCHAR(50) NOT NULL, status VARCHAR(20) DEFAULT 'pending',
-        total INT DEFAULT 0, processed INT DEFAULT 0, errors INT DEFAULT 0,
+        total INT DEFAULT 0, claimed INT DEFAULT 0, processed INT DEFAULT 0, errors INT DEFAULT 0,
         data LONGTEXT, result LONGTEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1641,7 +1642,8 @@ PHPCONFIG;
     if ($result === false) {
         echo "\n✗ FAILED to write config.php — permission denied?\n";
         echo "  File: $configPath\n";
-        echo "  Owner: " . posix_getpwuid(fileowner($configPath))['name'] . "\n";
+        $owner = function_exists('posix_getpwuid') ? (posix_getpwuid(fileowner($configPath))['name'] ?? 'unknown') : fileowner($configPath);
+        echo "  Owner: $owner\n";
         echo "  Perms: " . substr(sprintf('%o', fileperms($configPath)), -4) . "\n";
     } else {
         echo "✓ config.php overwritten with MySQL version ($result bytes)\n\n";
@@ -1710,10 +1712,13 @@ function handleDeploySync(): void {
             RecursiveIteratorIterator::SELF_FIRST
         );
         foreach ($it as $item) {
-            $target = "$docRoot/$dir/" . $it->getSubPathname();
+            $subPath = substr($item->getPathname(), strlen($srcDir) + 1);
+            $target = "$docRoot/$dir/" . $subPath;
             if ($item->isDir()) {
                 if (!is_dir($target)) mkdir($target, 0755, true);
             } else {
+                $targetDir = dirname($target);
+                if (!is_dir($targetDir)) mkdir($targetDir, 0755, true);
                 copy($item->getPathname(), $target);
                 $count++;
             }
