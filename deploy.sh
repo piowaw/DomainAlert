@@ -50,6 +50,20 @@ chmod 755 cron 2>/dev/null || true
 chmod 644 cron/*.php 2>/dev/null || true
 chmod 755 public 2>/dev/null || true
 
+# Build and deploy frontend
+echo "Building frontend..."
+if [ -d "frontend" ]; then
+    cd frontend
+    npm install --silent
+    npm run build
+    cd ..
+    
+    # Copy built frontend to public directory
+    echo "Copying frontend files..."
+    rm -rf public/assets 2>/dev/null || true
+    cp -r frontend/dist/* public/
+fi
+
 # Protect sensitive files
 chmod 600 config.php 2>/dev/null || true
 chmod 600 database.sqlite 2>/dev/null || true
