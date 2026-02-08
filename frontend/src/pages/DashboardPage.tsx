@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Globe, Plus, Upload, RefreshCw, Trash2, Bell, LogOut, Settings, ExternalLink, Loader2 } from 'lucide-react';
+import { Globe, Plus, Upload, RefreshCw, Trash2, Bell, LogOut, Settings, ExternalLink, Loader2, Wand2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export default function DashboardPage() {
@@ -166,6 +166,12 @@ export default function DashboardPage() {
             <h1 className="text-xl font-bold">DomainAlert</h1>
           </div>
           <div className="flex items-center gap-4">
+            <Link to="/generator">
+              <Button variant="outline" size="sm">
+                <Wand2 className="h-4 w-4 mr-2" />
+                Generator
+              </Button>
+            </Link>
             <Dialog open={notifyDialogOpen} onOpenChange={setNotifyDialogOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm">
