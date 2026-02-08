@@ -104,12 +104,82 @@ class AiService {
                     fn($m) => $m['name'], 
                     $data['models'] ?? []
                 );
+                
+                // Auto-select: if configured model not available, use first available model
+                if (!empty($status['models_available']) && !$this->isModelInList($this->model, $status['models_available'])) {
+                    // Prefer llama3.1:8b > mistral > any first available
+                    $preferred = ['llama3.1:8b', 'llama3.1', 'mistral:7b', 'mistral', 'qwen2.5:7b'];
+                    $selected = $status['models_available'][0]; // fallback to first
+                    foreach ($preferred as $pref) {
+                        if ($this->isModelInList($pref, $status['models_available'])) {
+                            $selected = $pref;
+                            break;
+                        }
+                    }
+                    $this->model = $selected;
+                    $status['model'] = $selected;
+                    $status['auto_selected'] = true;
+                    error_log("AiService: auto-selected model '{$selected}' (configured model not available)");
+                }
             }
         } catch (Exception $e) {
             $status['error'] = $e->getMessage();
         }
         
         return $status;
+    }
+    
+    /**
+     * Check if model name matches any in list (fuzzy)
+     */
+    private function isModelInList(string $model, array $list): bool {
+        if (in_array($model, $list)) return true;
+        $baseName = explode(':', $model)[0];
+        foreach ($list as $m) {
+            if (str_starts_with($m, $model)) return true;
+            if (str_starts_with($m, $baseName . ':')) return true;
+        }
+        return false;
+    }
+    
+    /**
+     * Auto-select best available model if configured one isn't available
+     */
+    private function ensureBestModel(): void {
+        static $checked = false;
+        if ($checked) return;
+        $checked = true;
+        
+        // Quick check what models are available
+        try {
+            $ch = curl_init("{$this->ollamaUrl}/api/tags");
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 3,
+                CURLOPT_CONNECTTIMEOUT => 2,
+            ]);
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            
+            if ($httpCode === 200 && $response) {
+                $data = json_decode($response, true);
+                $available = array_map(fn($m) => $m['name'], $data['models'] ?? []);
+                
+                if (!empty($available) && !$this->isModelInList($this->model, $available)) {
+                    $preferred = ['llama3.1:8b', 'llama3.1', 'mistral:7b', 'mistral', 'qwen2.5:7b'];
+                    foreach ($preferred as $pref) {
+                        if ($this->isModelInList($pref, $available)) {
+                            $this->model = $pref;
+                            return;
+                        }
+                    }
+                    $this->model = $available[0];
+                }
+            }
+        } catch (Exception $e) {
+            // ignore — will use configured model
+        }
     }
     
     /**
@@ -377,6 +447,9 @@ class AiService {
      * Call Ollama API
      */
     private function callOllama(array $messages): ?string {
+        // Auto-detect best available model before calling
+        $this->ensureBestModel();
+        
         $data = [
             'model' => $this->model,
             'messages' => $messages,
