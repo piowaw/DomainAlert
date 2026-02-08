@@ -1570,7 +1570,7 @@ define('JWT_SECRET', 'ZMIEN-TO-NA-BARDZO-DLUGI-LOSOWY-CIAG-ZNAKOW');
 define('JWT_EXPIRY', 86400 * 7);
 
 define('OLLAMA_URL', 'http://localhost:11434');
-define('OLLAMA_MODEL', 'deepseek-r1:1.5b');
+define('OLLAMA_MODEL', 'llama3.1:8b');
 
 if (!defined('SKIP_HEADERS')) {
     header('Access-Control-Allow-Origin: *');

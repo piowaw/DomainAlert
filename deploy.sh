@@ -107,6 +107,17 @@ echo "━━━ [3/5] Database & configuration ━━━"
 chmod 600 config.php 2>/dev/null || true
 chmod 600 database.sqlite 2>/dev/null || true
 
+# Update OLLAMA_MODEL in config.php to llama3.1:8b
+if [ -f "config.php" ]; then
+    if grep -q "OLLAMA_MODEL.*deepseek" config.php; then
+        echo "Updating AI model from deepseek to llama3.1:8b..."
+        sed -i "s/define('OLLAMA_MODEL',.*/define('OLLAMA_MODEL', 'llama3.1:8b');/" config.php
+        echo "✓ AI model updated to llama3.1:8b"
+    else
+        echo "✓ AI model already configured: $(grep OLLAMA_MODEL config.php)"
+    fi
+fi
+
 # Run database migrations
 if [ -f "migrate.php" ]; then
     echo "Running database migrations..."
