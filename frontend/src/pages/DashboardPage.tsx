@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/hooks/useAuth';
-import { getDomains, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, type Domain } from '@/lib/api';
+import { getDomainsFiltered, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, type Domain, type DomainFilters } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,8 +9,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Globe, Plus, Upload, RefreshCw, Trash2, Bell, LogOut, Settings, ExternalLink, Loader2, Wand2 } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Globe, Plus, Upload, RefreshCw, Trash2, Bell, LogOut, Settings, ExternalLink, Loader2, Wand2, Search, ChevronLeft, ChevronRight, ListTodo } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export default function DashboardPage() {
@@ -29,22 +29,72 @@ export default function DashboardPage() {
   const [testingNtfy, setTestingNtfy] = useState(false);
   const [testingEmail, setTestingEmail] = useState(false);
   const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
+  
+  // Filter and pagination state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filter, setFilter] = useState<'all' | 'registered' | 'available' | 'expiring'>('all');
+  const [sortBy, setSortBy] = useState<'domain' | 'expiry_date' | 'created_at'>('expiry_date');
+  const [sortDir, setSortDir] = useState<'ASC' | 'DESC'>('ASC');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalDomains, setTotalDomains] = useState(0);
+  
+  // Stats
+  const [stats, setStats] = useState({ registered: 0, available: 0, expiring: 0 });
 
-  useEffect(() => {
-    loadDomains();
-    loadNotifyInfo();
-  }, []);
-
-  const loadDomains = async () => {
+  const loadDomains = useCallback(async () => {
     try {
-      const result = await getDomains();
+      const filters: DomainFilters = {
+        search: searchQuery || undefined,
+        filter,
+        sort: sortBy,
+        dir: sortDir,
+        page,
+        limit,
+      };
+      const result = await getDomainsFiltered(filters);
       setDomains(result.domains);
+      setTotalPages(result.pagination.total_pages);
+      setTotalDomains(result.pagination.total);
     } catch (err) {
       console.error('Failed to load domains:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchQuery, filter, sortBy, sortDir, page, limit]);
+  
+  // Load stats separately for all domains
+  const loadStats = useCallback(async () => {
+    try {
+      const all = await getDomainsFiltered({ limit: 100000 }); // Get all for stats
+      const allDomains = all.domains;
+      const registered = allDomains.filter(d => d.is_registered).length;
+      const available = allDomains.filter(d => !d.is_registered).length;
+      const expiring = allDomains.filter(d => {
+        if (!d.is_registered || !d.expiry_date) return false;
+        const days = Math.ceil((new Date(d.expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+        return days <= 30;
+      }).length;
+      setStats({ registered, available, expiring });
+    } catch (err) {
+      console.error('Failed to load stats:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDomains();
+    loadNotifyInfo();
+  }, [loadDomains]);
+  
+  useEffect(() => {
+    loadStats();
+  }, [loadStats]);
+  
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [searchQuery, filter, sortBy, sortDir, limit]);
 
   const loadNotifyInfo = async () => {
     try {
@@ -65,6 +115,7 @@ export default function DashboardPage() {
       setNewDomain('');
       setAddDialogOpen(false);
       await loadDomains();
+      await loadStats();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to add domain');
     } finally {
@@ -81,20 +132,20 @@ export default function DashboardPage() {
     
     try {
       // Parse domains from text
-      const domains = importText
+      const domainList = importText
         .split(/[,\s\n]+/)
         .map(d => d.trim())
         .filter(d => d.length > 0);
       
-      if (domains.length === 0) {
+      if (domainList.length === 0) {
         alert('Nie znaleziono domen do zaimportowania');
         return;
       }
       
-      setImportProgress({ current: 0, total: domains.length });
+      setImportProgress({ current: 0, total: domainList.length });
       
       const result = await importDomainsInBatches(
-        domains,
+        domainList,
         50, // batch size
         (current, total) => setImportProgress({ current, total })
       );
@@ -103,6 +154,7 @@ export default function DashboardPage() {
       setImportText('');
       setImportDialogOpen(false);
       await loadDomains();
+      await loadStats();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to import domains');
     } finally {
@@ -116,6 +168,7 @@ export default function DashboardPage() {
     try {
       await checkDomain(id);
       await loadDomains();
+      await loadStats();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to check domain');
     } finally {
@@ -129,6 +182,7 @@ export default function DashboardPage() {
     try {
       await deleteDomain(id);
       await loadDomains();
+      await loadStats();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete domain');
     }
@@ -169,13 +223,6 @@ export default function DashboardPage() {
     return <Badge variant="outline">{days} dni</Badge>;
   };
 
-  const registeredCount = domains.filter(d => d.is_registered).length;
-  const availableCount = domains.filter(d => !d.is_registered).length;
-  const expiringCount = domains.filter(d => {
-    const days = getDaysUntilExpiry(d.expiry_date);
-    return days !== null && days <= 30 && d.is_registered;
-  }).length;
-
   return (
     <div className="min-h-screen bg-muted/30">
       {/* Header */}
@@ -192,6 +239,12 @@ export default function DashboardPage() {
               <Button variant="outline" size="sm">
                 <Wand2 className="h-4 w-4 mr-2" />
                 Generator
+              </Button>
+            </Link>
+            <Link to="/tasks">
+              <Button variant="outline" size="sm">
+                <ListTodo className="h-4 w-4 mr-2" />
+                Zadania
               </Button>
             </Link>
             <Dialog open={notifyDialogOpen} onOpenChange={setNotifyDialogOpen}>
@@ -304,6 +357,11 @@ export default function DashboardPage() {
                 </Button>
               </Link>
             )}
+            <Link to="/settings">
+              <Button variant="ghost" size="sm">
+                <Settings className="h-4 w-4" />
+              </Button>
+            </Link>
             <span className="text-sm text-muted-foreground">{user?.email}</span>
             <Button variant="ghost" size="sm" onClick={logout}>
               <LogOut className="h-4 w-4" />
@@ -319,25 +377,25 @@ export default function DashboardPage() {
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>Wszystkie domeny</CardDescription>
-              <CardTitle className="text-3xl">{domains.length}</CardTitle>
+              <CardTitle className="text-3xl">{stats.registered + stats.available}</CardTitle>
             </CardHeader>
           </Card>
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>Zarejestrowane</CardDescription>
-              <CardTitle className="text-3xl">{registeredCount}</CardTitle>
+              <CardTitle className="text-3xl">{stats.registered}</CardTitle>
             </CardHeader>
           </Card>
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>Dostępne</CardDescription>
-              <CardTitle className="text-3xl text-green-600">{availableCount}</CardTitle>
+              <CardTitle className="text-3xl text-green-600">{stats.available}</CardTitle>
             </CardHeader>
           </Card>
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>Wygasają w 30 dni</CardDescription>
-              <CardTitle className="text-3xl text-orange-600">{expiringCount}</CardTitle>
+              <CardTitle className="text-3xl text-orange-600">{stats.expiring}</CardTitle>
             </CardHeader>
           </Card>
         </div>
@@ -449,10 +507,70 @@ export default function DashboardPage() {
         {/* Domains table */}
         <Card>
           <CardHeader>
-            <CardTitle>Lista domen</CardTitle>
-            <CardDescription>
-              Domeny posortowane wg daty wygaśnięcia
-            </CardDescription>
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+              <div>
+                <CardTitle>Lista domen</CardTitle>
+                <CardDescription>
+                  {totalDomains} domen • Strona {page} z {totalPages}
+                </CardDescription>
+              </div>
+              
+              {/* Search and filters */}
+              <div className="flex flex-wrap gap-2 items-center">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Szukaj domeny..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-8 w-48"
+                  />
+                </div>
+                
+                <Select value={filter} onValueChange={(v) => setFilter(v as typeof filter)}>
+                  <SelectTrigger className="w-36">
+                    <SelectValue placeholder="Filtr" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Wszystkie</SelectItem>
+                    <SelectItem value="registered">Zarejestrowane</SelectItem>
+                    <SelectItem value="available">Dostępne</SelectItem>
+                    <SelectItem value="expiring">Wygasające</SelectItem>
+                  </SelectContent>
+                </Select>
+                
+                <Select value={sortBy} onValueChange={(v) => setSortBy(v as typeof sortBy)}>
+                  <SelectTrigger className="w-40">
+                    <SelectValue placeholder="Sortuj" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="expiry_date">Data wygaśnięcia</SelectItem>
+                    <SelectItem value="domain">Nazwa domeny</SelectItem>
+                    <SelectItem value="created_at">Data dodania</SelectItem>
+                  </SelectContent>
+                </Select>
+                
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSortDir(sortDir === 'ASC' ? 'DESC' : 'ASC')}
+                >
+                  {sortDir === 'ASC' ? '↑' : '↓'}
+                </Button>
+                
+                <Select value={String(limit)} onValueChange={(v) => setLimit(Number(v))}>
+                  <SelectTrigger className="w-20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="10">10</SelectItem>
+                    <SelectItem value="25">25</SelectItem>
+                    <SelectItem value="50">50</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loading ? (
@@ -461,49 +579,50 @@ export default function DashboardPage() {
               </div>
             ) : domains.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
-                Brak domen. Dodaj pierwszą domenę do monitorowania.
+                {searchQuery || filter !== 'all' 
+                  ? 'Brak domen pasujących do kryteriów wyszukiwania.' 
+                  : 'Brak domen. Dodaj pierwszą domenę do monitorowania.'}
               </div>
             ) : (
-              <Tabs defaultValue="all">
-                <TabsList>
-                  <TabsTrigger value="all">Wszystkie ({domains.length})</TabsTrigger>
-                  <TabsTrigger value="available">Dostępne ({availableCount})</TabsTrigger>
-                  <TabsTrigger value="expiring">Wygasające ({expiringCount})</TabsTrigger>
-                </TabsList>
-                <TabsContent value="all">
-                  <DomainTable 
-                    domains={domains} 
-                    onCheck={handleCheck} 
-                    onDelete={handleDelete}
-                    checkingId={checkingId}
-                    formatDate={formatDate}
-                    getExpiryBadge={getExpiryBadge}
-                  />
-                </TabsContent>
-                <TabsContent value="available">
-                  <DomainTable 
-                    domains={domains.filter(d => !d.is_registered)} 
-                    onCheck={handleCheck} 
-                    onDelete={handleDelete}
-                    checkingId={checkingId}
-                    formatDate={formatDate}
-                    getExpiryBadge={getExpiryBadge}
-                  />
-                </TabsContent>
-                <TabsContent value="expiring">
-                  <DomainTable 
-                    domains={domains.filter(d => {
-                      const days = getDaysUntilExpiry(d.expiry_date);
-                      return days !== null && days <= 30 && d.is_registered;
-                    })} 
-                    onCheck={handleCheck} 
-                    onDelete={handleDelete}
-                    checkingId={checkingId}
-                    formatDate={formatDate}
-                    getExpiryBadge={getExpiryBadge}
-                  />
-                </TabsContent>
-              </Tabs>
+              <>
+                <DomainTable 
+                  domains={domains} 
+                  onCheck={handleCheck} 
+                  onDelete={handleDelete}
+                  checkingId={checkingId}
+                  formatDate={formatDate}
+                  getExpiryBadge={getExpiryBadge}
+                />
+                
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between mt-4 pt-4 border-t">
+                    <p className="text-sm text-muted-foreground">
+                      Wyświetlanie {(page - 1) * limit + 1} - {Math.min(page * limit, totalDomains)} z {totalDomains}
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page <= 1}
+                        onClick={() => setPage(p => Math.max(1, p - 1))}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        Poprzednia
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={page >= totalPages}
+                        onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                      >
+                        Następna
+                        <ChevronRight className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </CardContent>
         </Card>

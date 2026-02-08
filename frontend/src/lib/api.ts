@@ -225,3 +225,98 @@ export interface ImportResult {
   is_registered: boolean;
   added: boolean;
 }
+
+export interface Job {
+  id: number;
+  user_id: number;
+  type: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  total: number;
+  processed: number;
+  errors: number;
+  data: string;
+  result: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedDomains {
+  domains: Domain[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    total_pages: number;
+  };
+}
+
+export interface DomainFilters {
+  search?: string;
+  filter?: 'all' | 'registered' | 'available' | 'expiring';
+  sort?: 'domain' | 'expiry_date' | 'is_registered' | 'last_checked' | 'created_at';
+  dir?: 'ASC' | 'DESC';
+  page?: number;
+  limit?: number;
+}
+
+// Enhanced Domains with search/filter/pagination
+export async function getDomainsFiltered(filters: DomainFilters = {}) {
+  const params = new URLSearchParams();
+  if (filters.search) params.append('search', filters.search);
+  if (filters.filter) params.append('filter', filters.filter);
+  if (filters.sort) params.append('sort', filters.sort);
+  if (filters.dir) params.append('dir', filters.dir);
+  if (filters.page) params.append('page', filters.page.toString());
+  if (filters.limit) params.append('limit', filters.limit.toString());
+  
+  const query = params.toString();
+  return apiCall<PaginatedDomains>(`domains${query ? `?${query}` : ''}`);
+}
+
+// Profile
+export async function getProfile() {
+  return apiCall<{ user: User }>('profile');
+}
+
+export async function updateProfile(data: { email?: string; password?: string; current_password: string }) {
+  return apiCall<{ success: boolean; user: User }>('profile', {
+    method: 'PUT',
+    body: data,
+  });
+}
+
+// Jobs (Background Tasks)
+export async function getJobs() {
+  return apiCall<{ jobs: Job[] }>('jobs');
+}
+
+export async function createJob(type: string, data: object) {
+  return apiCall<{ job: Job }>('jobs', {
+    method: 'POST',
+    body: { type, data },
+  });
+}
+
+export async function getJobStatus(id: number) {
+  return apiCall<{ job: Job }>(`jobs/${id}`);
+}
+
+export async function processJob(id: number) {
+  return apiCall<{ job: Job; processed: number }>(`jobs/${id}/process`, {
+    method: 'POST',
+  });
+}
+
+export async function deleteJob(id: number) {
+  return apiCall<{ success: boolean }>(`jobs/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+// Admin: Update user role
+export async function updateUserRole(id: number, isAdmin: boolean) {
+  return apiCall<{ success: boolean; user: User }>(`users/${id}`, {
+    method: 'PUT',
+    body: { is_admin: isAdmin },
+  });
+}

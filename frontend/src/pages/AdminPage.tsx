@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
-import { getUsers, deleteUser, createUser, getInvitations, createInvitation, deleteInvitation, type User, type Invitation } from '@/lib/api';
+import { getUsers, deleteUser, createUser, getInvitations, createInvitation, deleteInvitation, updateUserRole, type User, type Invitation } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Switch } from '@/components/ui/switch';
 import { ArrowLeft, Plus, Trash2, Copy, Check, Loader2 } from 'lucide-react';
 
 export default function AdminPage() {
@@ -29,6 +30,7 @@ export default function AdminPage() {
   const [newUserLoading, setNewUserLoading] = useState(false);
   const [createdUserPassword, setCreatedUserPassword] = useState<string | null>(null);
   const [createdUserEmail, setCreatedUserEmail] = useState<string | null>(null);
+  const [updatingRoleId, setUpdatingRoleId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!user?.is_admin) {
@@ -78,6 +80,18 @@ export default function AdminPage() {
       await loadData();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete user');
+    }
+  };
+
+  const handleRoleChange = async (id: number, isAdmin: boolean) => {
+    setUpdatingRoleId(id);
+    try {
+      await updateUserRole(id, isAdmin);
+      await loadData();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to update role');
+    } finally {
+      setUpdatingRoleId(null);
     }
   };
 
@@ -394,6 +408,7 @@ export default function AdminPage() {
                 <TableRow>
                   <TableHead>Email</TableHead>
                   <TableHead>Rola</TableHead>
+                  <TableHead>Administrator</TableHead>
                   <TableHead>Data rejestracji</TableHead>
                   <TableHead className="text-right">Akcje</TableHead>
                 </TableRow>
@@ -407,9 +422,25 @@ export default function AdminPage() {
                         {u.is_admin ? 'Admin' : 'Użytkownik'}
                       </Badge>
                     </TableCell>
+                    <TableCell>
+                      {u.id !== user?.id ? (
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            checked={u.is_admin}
+                            disabled={updatingRoleId === u.id}
+                            onCheckedChange={(checked) => handleRoleChange(u.id, checked)}
+                          />
+                          {updatingRoleId === u.id && (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground text-sm">-</span>
+                      )}
+                    </TableCell>
                     <TableCell>{u.created_at ? formatDate(u.created_at) : '-'}</TableCell>
                     <TableCell className="text-right">
-                      {u.id !== user?.id && !u.is_admin && (
+                      {u.id !== user?.id && (
                         <Button
                           variant="ghost"
                           size="sm"

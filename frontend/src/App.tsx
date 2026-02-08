@@ -5,6 +5,9 @@ import RegisterPage from '@/pages/RegisterPage';
 import DashboardPage from '@/pages/DashboardPage';
 import AdminPage from '@/pages/AdminPage';
 import GeneratorPage from '@/pages/GeneratorPage';
+import SettingsPage from '@/pages/SettingsPage';
+import TasksPage from '@/pages/TasksPage';
+import { Toaster } from '@/components/ui/toaster';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -85,6 +88,22 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/settings"
+        element={
+          <ProtectedRoute>
+            <SettingsPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/tasks"
+        element={
+          <ProtectedRoute>
+            <TasksPage />
+          </ProtectedRoute>
+        }
+      />
     </Routes>
   );
 }
@@ -94,6 +113,7 @@ function App() {
     <BrowserRouter>
       <AuthProvider>
         <AppRoutes />
+        <Toaster />
       </AuthProvider>
     </BrowserRouter>
   );

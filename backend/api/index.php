@@ -39,6 +39,12 @@ try {
         case 'notifications':
             handleNotifications($segments[1] ?? '', $db, $notifications, $input, $method);
             break;
+        case 'jobs':
+            handleJobs($segments[1] ?? '', $db, $whois, $input, $method);
+            break;
+        case 'profile':
+            handleProfile($db, $input, $method);
+            break;
         default:
             jsonResponse(['error' => 'Not found'], 404);
     }
@@ -144,10 +150,67 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
     $user = requireAuth();
     
     if ($action === '' && $method === 'GET') {
-        // List all domains
-        $stmt = $db->query("SELECT d.*, u.email as added_by_email FROM domains d LEFT JOIN users u ON d.added_by = u.id ORDER BY d.expiry_date ASC NULLS LAST");
+        // List domains with search, filter and pagination
+        $search = $_GET['search'] ?? '';
+        $filter = $_GET['filter'] ?? 'all'; // all, registered, available, expiring
+        $sortBy = $_GET['sort'] ?? 'expiry_date';
+        $sortDir = strtoupper($_GET['dir'] ?? 'ASC') === 'DESC' ? 'DESC' : 'ASC';
+        $page = max(1, intval($_GET['page'] ?? 1));
+        $limit = max(1, min(500, intval($_GET['limit'] ?? 50)));
+        $offset = ($page - 1) * $limit;
+        
+        // Build query
+        $where = [];
+        $params = [];
+        
+        if ($search) {
+            $where[] = "d.domain LIKE ?";
+            $params[] = "%$search%";
+        }
+        
+        switch ($filter) {
+            case 'registered':
+                $where[] = "d.is_registered = 1";
+                break;
+            case 'available':
+                $where[] = "d.is_registered = 0";
+                break;
+            case 'expiring':
+                $where[] = "d.is_registered = 1 AND d.expiry_date IS NOT NULL AND d.expiry_date <= date('now', '+30 days')";
+                break;
+        }
+        
+        $whereClause = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+        
+        // Allowed sort fields
+        $sortFields = ['domain', 'expiry_date', 'is_registered', 'last_checked', 'created_at'];
+        if (!in_array($sortBy, $sortFields)) $sortBy = 'expiry_date';
+        
+        // Special handling for expiry_date to put NULLs last
+        $orderClause = $sortBy === 'expiry_date' 
+            ? "ORDER BY d.expiry_date IS NULL, d.expiry_date $sortDir"
+            : "ORDER BY d.$sortBy $sortDir";
+        
+        // Get total count
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM domains d $whereClause");
+        $countStmt->execute($params);
+        $total = $countStmt->fetchColumn();
+        
+        // Get domains
+        $query = "SELECT d.*, u.email as added_by_email FROM domains d LEFT JOIN users u ON d.added_by = u.id $whereClause $orderClause LIMIT $limit OFFSET $offset";
+        $stmt = $db->prepare($query);
+        $stmt->execute($params);
         $domains = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        jsonResponse(['domains' => $domains]);
+        
+        jsonResponse([
+            'domains' => $domains,
+            'pagination' => [
+                'page' => $page,
+                'limit' => $limit,
+                'total' => (int)$total,
+                'pages' => ceil($total / $limit)
+            ]
+        ]);
     }
     
     if ($action === '' && $method === 'POST') {
@@ -329,6 +392,34 @@ function handleUsers(string $action, PDO $db, array $input, string $method): voi
         jsonResponse(['success' => true]);
     }
     
+    // Update user role (admin only)
+    if (is_numeric($action) && $method === 'PUT') {
+        $targetUserId = (int)$action;
+        
+        if ($targetUserId == $user['id']) {
+            jsonResponse(['error' => 'Cannot change your own role'], 400);
+        }
+        
+        $isAdmin = isset($input['is_admin']) ? ($input['is_admin'] ? 1 : 0) : null;
+        
+        if ($isAdmin === null) {
+            jsonResponse(['error' => 'is_admin is required'], 400);
+        }
+        
+        $stmt = $db->prepare("UPDATE users SET is_admin = ? WHERE id = ?");
+        $stmt->execute([$isAdmin, $targetUserId]);
+        
+        $stmt = $db->prepare("SELECT id, email, is_admin, created_at FROM users WHERE id = ?");
+        $stmt->execute([$targetUserId]);
+        $updatedUser = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$updatedUser) {
+            jsonResponse(['error' => 'User not found'], 404);
+        }
+        
+        jsonResponse(['user' => $updatedUser]);
+    }
+    
     jsonResponse(['error' => 'Not found'], 404);
 }
 
@@ -404,4 +495,205 @@ function handleNotifications(string $action, PDO $db, NotificationService $notif
         'instructions' => 'Zasubskrybuj ten URL w aplikacji ntfy, aby otrzymywać powiadomienia push.',
         'smtp_configured' => defined('SMTP_HOST'),
     ]);
+}
+
+function handleProfile(PDO $db, array $input, string $method): void {
+    $user = requireAuth();
+    
+    // Get profile
+    if ($method === 'GET') {
+        $stmt = $db->prepare("SELECT id, email, is_admin, created_at FROM users WHERE id = ?");
+        $stmt->execute([$user['id']]);
+        $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+        jsonResponse(['user' => $profile]);
+    }
+    
+    // Update profile
+    if ($method === 'PUT') {
+        $email = $input['email'] ?? null;
+        $currentPassword = $input['current_password'] ?? null;
+        $newPassword = $input['new_password'] ?? null;
+        
+        $updates = [];
+        $params = [];
+        
+        // Update email
+        if ($email && $email !== $user['email']) {
+            // Check if email is taken
+            $stmt = $db->prepare("SELECT id FROM users WHERE email = ? AND id != ?");
+            $stmt->execute([$email, $user['id']]);
+            if ($stmt->fetch()) {
+                jsonResponse(['error' => 'Email already taken'], 400);
+            }
+            $updates[] = "email = ?";
+            $params[] = $email;
+        }
+        
+        // Update password
+        if ($newPassword) {
+            if (!$currentPassword) {
+                jsonResponse(['error' => 'Current password is required'], 400);
+            }
+            
+            // Verify current password
+            $stmt = $db->prepare("SELECT password FROM users WHERE id = ?");
+            $stmt->execute([$user['id']]);
+            $userData = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!password_verify($currentPassword, $userData['password'])) {
+                jsonResponse(['error' => 'Current password is incorrect'], 400);
+            }
+            
+            $updates[] = "password = ?";
+            $params[] = password_hash($newPassword, PASSWORD_DEFAULT);
+        }
+        
+        if (empty($updates)) {
+            jsonResponse(['message' => 'Nothing to update']);
+        }
+        
+        $params[] = $user['id'];
+        $sql = "UPDATE users SET " . implode(', ', $updates) . " WHERE id = ?";
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+        
+        // Return updated profile
+        $stmt = $db->prepare("SELECT id, email, is_admin, created_at FROM users WHERE id = ?");
+        $stmt->execute([$user['id']]);
+        $profile = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        jsonResponse(['user' => $profile, 'message' => 'Profile updated']);
+    }
+    
+    jsonResponse(['error' => 'Not found'], 404);
+}
+
+function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, string $method): void {
+    $user = requireAuth();
+    
+    // List jobs for current user
+    if ($action === '' && $method === 'GET') {
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE user_id = ? ORDER BY created_at DESC LIMIT 50");
+        $stmt->execute([$user['id']]);
+        $jobs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        jsonResponse(['jobs' => $jobs]);
+    }
+    
+    // Create new job (background import)
+    if ($action === '' && $method === 'POST') {
+        $type = $input['type'] ?? '';
+        $data = $input['data'] ?? [];
+        
+        if ($type !== 'import') {
+            jsonResponse(['error' => 'Invalid job type'], 400);
+        }
+        
+        $domains = $data['domains'] ?? [];
+        if (empty($domains)) {
+            jsonResponse(['error' => 'No domains provided'], 400);
+        }
+        
+        // Create job record
+        $stmt = $db->prepare("INSERT INTO jobs (user_id, type, status, total, data) VALUES (?, ?, 'pending', ?, ?)");
+        $stmt->execute([$user['id'], $type, count($domains), json_encode($domains)]);
+        $jobId = $db->lastInsertId();
+        
+        jsonResponse(['job' => [
+            'id' => $jobId,
+            'type' => $type,
+            'status' => 'pending',
+            'total' => count($domains),
+            'processed' => 0
+        ]], 201);
+    }
+    
+    // Get job status
+    if (is_numeric($action) && $method === 'GET') {
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND user_id = ?");
+        $stmt->execute([$action, $user['id']]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$job) {
+            jsonResponse(['error' => 'Job not found'], 404);
+        }
+        
+        jsonResponse(['job' => $job]);
+    }
+    
+    // Process a batch of a pending job
+    if ($action === 'process' && $method === 'POST') {
+        $jobId = $input['job_id'] ?? 0;
+        $batchSize = min(50, max(1, $input['batch_size'] ?? 10));
+        
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND user_id = ?");
+        $stmt->execute([$jobId, $user['id']]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$job) {
+            jsonResponse(['error' => 'Job not found'], 404);
+        }
+        
+        if ($job['status'] === 'completed') {
+            jsonResponse(['job' => $job, 'message' => 'Job already completed']);
+        }
+        
+        $domains = json_decode($job['data'], true);
+        $processed = (int)$job['processed'];
+        $errors = (int)$job['errors'];
+        
+        // Get batch of domains to process
+        $batch = array_slice($domains, $processed, $batchSize);
+        
+        foreach ($batch as $domainName) {
+            try {
+                $domainName = strtolower(trim($domainName));
+                $domainName = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $domainName);
+                $domainName = rtrim($domainName, '/');
+                
+                if (empty($domainName)) {
+                    $errors++;
+                    $processed++;
+                    continue;
+                }
+                
+                // Check WHOIS
+                $whoisData = $whois->lookup($domainName);
+                
+                // Insert domain
+                $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
+                $stmt->execute([
+                    $domainName,
+                    $whoisData['expiry_date'],
+                    $whoisData['is_registered'] ? 1 : 0,
+                    $user['id']
+                ]);
+                
+                $processed++;
+            } catch (Exception $e) {
+                $errors++;
+                $processed++;
+            }
+        }
+        
+        // Update job
+        $status = $processed >= count($domains) ? 'completed' : 'processing';
+        $stmt = $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?");
+        $stmt->execute([$status, $processed, $errors, $jobId]);
+        
+        // Get updated job
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+        $stmt->execute([$jobId]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        jsonResponse(['job' => $job]);
+    }
+    
+    // Delete job
+    if (is_numeric($action) && $method === 'DELETE') {
+        $stmt = $db->prepare("DELETE FROM jobs WHERE id = ? AND user_id = ?");
+        $stmt->execute([$action, $user['id']]);
+        jsonResponse(['success' => true]);
+    }
+    
+    jsonResponse(['error' => 'Not found'], 404);
 }
