@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createImportJob } from '@/lib/api';
+import { ALL_TLDS, TLD_CATEGORIES, TLD_PRESETS } from '@/data/tlds';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,42 +9,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Wand2, Plus, Copy, Loader2, Check, Shuffle, Filter, Download } from 'lucide-react';
+import { Wand2, Plus, Copy, Loader2, Check, Shuffle, Filter, Download, Search, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-
-// TLD options
-const TLDS = [
-  { value: 'com', label: '.com', popular: true },
-  { value: 'net', label: '.net', popular: true },
-  { value: 'org', label: '.org', popular: true },
-  { value: 'io', label: '.io', popular: true },
-  { value: 'co', label: '.co', popular: true },
-  { value: 'ai', label: '.ai', popular: true },
-  { value: 'app', label: '.app', popular: true },
-  { value: 'dev', label: '.dev', popular: true },
-  { value: 'pl', label: '.pl', popular: true },
-  { value: 'eu', label: '.eu', popular: false },
-  { value: 'de', label: '.de', popular: false },
-  { value: 'uk', label: '.uk', popular: false },
-  { value: 'fr', label: '.fr', popular: false },
-  { value: 'it', label: '.it', popular: false },
-  { value: 'es', label: '.es', popular: false },
-  { value: 'nl', label: '.nl', popular: false },
-  { value: 'xyz', label: '.xyz', popular: false },
-  { value: 'info', label: '.info', popular: false },
-  { value: 'biz', label: '.biz', popular: false },
-  { value: 'me', label: '.me', popular: false },
-  { value: 'tv', label: '.tv', popular: false },
-  { value: 'cc', label: '.cc', popular: false },
-  { value: 'ws', label: '.ws', popular: false },
-  { value: 'mobi', label: '.mobi', popular: false },
-  { value: 'pro', label: '.pro', popular: false },
-  { value: 'tech', label: '.tech', popular: false },
-  { value: 'online', label: '.online', popular: false },
-  { value: 'store', label: '.store', popular: false },
-  { value: 'shop', label: '.shop', popular: false },
-  { value: 'blog', label: '.blog', popular: false },
-];
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 const CONSONANTS = 'bcdfghjklmnpqrstvwxyz';
 const VOWELS = 'aeiou';
@@ -58,6 +26,49 @@ export default function GeneratorPage() {
   const [generatedDomains, setGeneratedDomains] = useState<string[]>([]);
   const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
   const [importing, setImporting] = useState(false);
+  
+  // TLD selection UI
+  const [tldSearch, setTldSearch] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [showAllTlds, setShowAllTlds] = useState(false);
+  
+  // Filtered TLDs based on search and category
+  const filteredTlds = useMemo(() => {
+    let tlds = ALL_TLDS;
+    
+    // Filter by category
+    if (selectedCategory && TLD_CATEGORIES[selectedCategory as keyof typeof TLD_CATEGORIES]) {
+      const categoryTlds = TLD_CATEGORIES[selectedCategory as keyof typeof TLD_CATEGORIES].tlds;
+      tlds = tlds.filter(tld => categoryTlds.includes(tld));
+    }
+    
+    // Filter by search
+    if (tldSearch.trim()) {
+      const search = tldSearch.toLowerCase().trim();
+      tlds = tlds.filter(tld => tld.includes(search));
+    }
+    
+    return tlds;
+  }, [selectedCategory, tldSearch]);
+
+  // Select all visible TLDs
+  const selectAllVisible = () => {
+    setSelectedTlds(prev => {
+      const newSet = new Set(prev);
+      filteredTlds.forEach(tld => newSet.add(tld));
+      return Array.from(newSet);
+    });
+  };
+
+  // Deselect all visible TLDs
+  const deselectAllVisible = () => {
+    setSelectedTlds(prev => prev.filter(tld => !filteredTlds.includes(tld)));
+  };
+
+  // Apply preset
+  const applyPreset = (presetKey: keyof typeof TLD_PRESETS) => {
+    setSelectedTlds(TLD_PRESETS[presetKey]);
+  };
   
   // Length-based generator
   const [domainLength, setDomainLength] = useState(4);
@@ -412,37 +423,135 @@ export default function GeneratorPage() {
           {/* TLD Selection */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Rozszerzenia (TLD)</CardTitle>
-              <CardDescription>Wybierz rozszerzenia dla generowanych domen</CardDescription>
+              <CardTitle className="text-lg flex items-center justify-between">
+                <span>Rozszerzenia (TLD)</span>
+                <Badge variant="secondary">{selectedTlds.length} wybrano z {ALL_TLDS.length}</Badge>
+              </CardTitle>
+              <CardDescription>Wybierz rozszerzenia dla generowanych domen - dostępne wszystkie {ALL_TLDS.length} oficjalnych TLD z listy IANA</CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
+              {/* Quick presets */}
               <div className="flex flex-wrap gap-2">
-                {TLDS.filter(t => t.popular).map(tld => (
-                  <Badge 
-                    key={tld.value}
-                    variant={selectedTlds.includes(tld.value) ? 'default' : 'outline'}
-                    className="cursor-pointer"
-                    onClick={() => toggleTld(tld.value)}
+                <Button variant="outline" size="sm" onClick={() => applyPreset('top10')}>
+                  Top 10
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => applyPreset('shortDomains')}>
+                  Krótkie (2 znaki)
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => applyPreset('techOnly')}>
+                  Tech
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => applyPreset('europeOnly')}>
+                  Europa
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setSelectedTlds([])}>
+                  <X className="h-3 w-3 mr-1" /> Wyczyść
+                </Button>
+              </div>
+
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Szukaj rozszerzenia (np. com, io, pl)..."
+                  value={tldSearch}
+                  onChange={(e) => setTldSearch(e.target.value)}
+                  className="pl-9"
+                />
+                {tldSearch && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-1 top-1/2 transform -translate-y-1/2 h-7 w-7 p-0"
+                    onClick={() => setTldSearch('')}
                   >
-                    {tld.label}
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+
+              {/* Category filter */}
+              <div className="flex flex-wrap gap-1">
+                <Badge 
+                  variant={selectedCategory === null ? 'default' : 'outline'}
+                  className="cursor-pointer"
+                  onClick={() => setSelectedCategory(null)}
+                >
+                  Wszystkie ({ALL_TLDS.length})
+                </Badge>
+                {Object.entries(TLD_CATEGORIES).map(([key, cat]) => (
+                  <Badge 
+                    key={key}
+                    variant={selectedCategory === key ? 'default' : 'outline'}
+                    className="cursor-pointer text-xs"
+                    onClick={() => setSelectedCategory(selectedCategory === key ? null : key)}
+                  >
+                    {cat.name} ({cat.tlds.length})
                   </Badge>
                 ))}
               </div>
-              <details className="mt-4">
-                <summary className="text-sm text-muted-foreground cursor-pointer">Więcej rozszerzeń...</summary>
-                <div className="flex flex-wrap gap-2 mt-2">
-                  {TLDS.filter(t => !t.popular).map(tld => (
-                    <Badge 
-                      key={tld.value}
-                      variant={selectedTlds.includes(tld.value) ? 'default' : 'outline'}
-                      className="cursor-pointer"
-                      onClick={() => toggleTld(tld.value)}
+
+              {/* Selection actions */}
+              <div className="flex gap-2 text-sm">
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={selectAllVisible}>
+                  Zaznacz widoczne ({filteredTlds.length})
+                </Button>
+                <span className="text-muted-foreground">|</span>
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={deselectAllVisible}>
+                  Odznacz widoczne
+                </Button>
+              </div>
+
+              {/* TLD grid */}
+              <div className="border rounded-md">
+                <ScrollArea className={showAllTlds ? "h-80" : "h-40"}>
+                  <div className="flex flex-wrap gap-1 p-2">
+                    {filteredTlds.slice(0, showAllTlds ? undefined : 150).map(tld => (
+                      <Badge 
+                        key={tld}
+                        variant={selectedTlds.includes(tld) ? 'default' : 'outline'}
+                        className="cursor-pointer text-xs"
+                        onClick={() => toggleTld(tld)}
+                      >
+                        .{tld}
+                      </Badge>
+                    ))}
+                    {!showAllTlds && filteredTlds.length > 150 && (
+                      <Badge variant="secondary" className="text-xs">
+                        +{filteredTlds.length - 150} więcej
+                      </Badge>
+                    )}
+                  </div>
+                </ScrollArea>
+                {filteredTlds.length > 150 && (
+                  <div className="border-t p-2 text-center">
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={() => setShowAllTlds(!showAllTlds)}
+                      className="w-full"
                     >
-                      {tld.label}
-                    </Badge>
-                  ))}
+                      {showAllTlds ? (
+                        <>
+                          <ChevronUp className="h-4 w-4 mr-1" /> Pokaż mniej
+                        </>
+                      ) : (
+                        <>
+                          <ChevronDown className="h-4 w-4 mr-1" /> Pokaż wszystkie ({filteredTlds.length})
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Selected TLDs summary */}
+              {selectedTlds.length > 0 && (
+                <div className="text-sm text-muted-foreground">
+                  Wybrane: {selectedTlds.slice(0, 15).map(t => `.${t}`).join(', ')}
+                  {selectedTlds.length > 15 && ` i ${selectedTlds.length - 15} więcej...`}
                 </div>
-              </details>
+              )}
             </CardContent>
           </Card>
 
