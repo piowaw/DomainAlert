@@ -50,10 +50,11 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // 10 workers × 2000 batch = fewer DB connections, massive batches
-  // Each worker: claims 2000 domains, does 200 concurrent RDAP in memory, flushes once to DB
-  const NUM_WORKERS = 10;
-  const BATCH_SIZE = 2000;
+  // 50 workers × 500 batch = fast parallel processing
+  // Each worker: claims 500 domains, does 200 concurrent RDAP in memory, flushes once to DB
+  // Counter shows 'processed' (actually done) not 'claimed' (assigned to workers)
+  const NUM_WORKERS = 50;
+  const BATCH_SIZE = 500;
   
   useEffect(() => {
     const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'processing');
@@ -68,7 +69,7 @@ export default function TasksPage() {
         try {
           const result = await processJob(jobId, BATCH_SIZE);
           consecutiveErrors = 0; // reset on success
-          // Update live counter immediately (no waiting for poll)
+          // Update live counter with ACTUAL processed count (not claimed)
           setLiveProgress(prev => ({
             ...prev,
             [jobId]: {
@@ -77,6 +78,7 @@ export default function TasksPage() {
               status: result.job.status,
             }
           }));
+          // Stop when completed or no more work to claim
           if (result.job.status === 'completed' || (result as Record<string, unknown>).message === 'completed') {
             break;
           }

@@ -110,6 +110,7 @@ function initDatabase(): PDO {
             type VARCHAR(50) NOT NULL,
             status VARCHAR(20) DEFAULT 'pending',
             total INT DEFAULT 0,
+            claimed INT DEFAULT 0,
             processed INT DEFAULT 0,
             errors INT DEFAULT 0,
             data LONGTEXT,
@@ -120,6 +121,13 @@ function initDatabase(): PDO {
             INDEX idx_status (status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
+    
+    // Add claimed column if missing (migration for existing tables)
+    try {
+        $db->exec("ALTER TABLE jobs ADD COLUMN claimed INT DEFAULT 0 AFTER total");
+    } catch (PDOException $e) {
+        // Column already exists — ignore
+    }
     
     // Create default admin if not exists
     $stmt = $db->query("SELECT COUNT(*) FROM users WHERE is_admin = 1");

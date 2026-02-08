@@ -783,6 +783,7 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
             'type' => $type,
             'status' => 'pending',
             'total' => $total,
+            'claimed' => 0,
             'processed' => 0,
             'errors' => 0,
         ]], 201);
@@ -801,15 +802,15 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         jsonResponse(['job' => $job]);
     }
     
-    // Process a batch — claim BIG batch, do ALL RDAP in memory, flush to DB once.
-    // 10 workers × 2000 batch × 200 concurrent RDAP = fast with few DB connections.
+    // Process a batch — claim range via 'claimed', only update 'processed' after real work.
+    // Counter accuracy: processed = actually done. claimed = assigned to workers.
     if ($action === 'process' && $method === 'POST') {
         $jobId = $input['job_id'] ?? 0;
-        $batchSize = min(5000, max(1, (int)($input['batch_size'] ?? 2000)));
+        $batchSize = min(5000, max(1, (int)($input['batch_size'] ?? 500)));
         
-        // === STEP 1: Atomic claim ===
+        // === STEP 1: Atomic claim via 'claimed' column ===
         $db->beginTransaction();
-        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND status IN ('pending', 'processing') AND processed < total FOR UPDATE");
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND status IN ('pending', 'processing') AND claimed < total FOR UPDATE");
         $stmt->execute([$jobId]);
         $job = $stmt->fetch(PDO::FETCH_ASSOC);
         
@@ -821,10 +822,11 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
             jsonResponse(['job' => $j2 ?: [], 'message' => 'completed']);
         }
         
-        $claimStart = (int)$job['processed'];
+        $claimStart = (int)$job['claimed'];
         $claimEnd = min($claimStart + $batchSize, (int)$job['total']);
         
-        $db->prepare("UPDATE jobs SET processed = ?, status = 'processing', updated_at = NOW() WHERE id = ?")
+        // Only update 'claimed' — NOT 'processed'! processed stays accurate.
+        $db->prepare("UPDATE jobs SET claimed = ?, status = 'processing', updated_at = NOW() WHERE id = ?")
            ->execute([$claimEnd, $jobId]);
         $db->commit(); // release lock fast
         
@@ -892,6 +894,11 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                 $db->commit();
             }
             
+            // === Update 'processed' AFTER real work is done ===
+            $actuallyDone = $claimEnd - $claimStart;
+            $db->prepare("UPDATE jobs SET processed = processed + ? WHERE id = ?")
+               ->execute([$actuallyDone, $jobId]);
+            
         } elseif ($job['type'] === 'whois_check') {
             $domainIds = $jobDataDecoded['domain_ids'] ?? [];
             $batchIds = array_slice($domainIds, $claimStart, $claimEnd - $claimStart);
@@ -931,6 +938,11 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                     }
                 }
             }
+            
+            // === Update 'processed' AFTER real work is done ===
+            $actuallyDone = $claimEnd - $claimStart;
+            $db->prepare("UPDATE jobs SET processed = processed + ? WHERE id = ?")
+               ->execute([$actuallyDone, $jobId]);
         }
         
         // === STEP 4: Update errors + check completion ===
@@ -942,11 +954,12 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         $finalStmt->execute([$jobId]);
         $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
         if ($job && (int)$job['processed'] >= (int)$job['total'] && $job['status'] !== 'completed') {
-            $db->prepare("UPDATE jobs SET status = 'completed' WHERE id = ?")->execute([$jobId]);
+            $db->prepare("UPDATE jobs SET status = 'completed', updated_at = NOW() WHERE id = ?")->execute([$jobId]);
             $finalStmt->execute([$jobId]);
             $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
         }
         
+        // Return both claimed and processed so frontend can show accurate progress
         jsonResponse(['job' => $job]);
     }
     

@@ -267,6 +267,7 @@ export interface Job {
   type: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   total: number;
+  claimed: number;
   processed: number;
   errors: number;
   data: string;
