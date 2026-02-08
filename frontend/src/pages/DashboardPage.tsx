@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getDomainsFiltered, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, createBulkWhoisCheckJob, getDomainStats, type Domain, type DomainFilters } from '@/lib/api';
+import { getDomainsFiltered, addDomain, createImportJob, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, createBulkWhoisCheckJob, getDomainStats, type Domain, type DomainFilters } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -126,7 +126,6 @@ export default function DashboardPage() {
     if (!importText.trim()) return;
 
     setImportLoading(true);
-    setImportProgress({ current: 0, total: 0 });
     
     try {
       // Parse domains from text
@@ -140,24 +139,23 @@ export default function DashboardPage() {
         return;
       }
       
-      setImportProgress({ current: 0, total: domainList.length });
+      await createImportJob(domainList);
       
-      const result = await importDomainsInBatches(
-        domainList,
-        50, // batch size
-        (current, total) => setImportProgress({ current, total })
-      );
-      
-      alert(`Zaimportowano ${result.imported} domen${result.errors > 0 ? ` (błędy: ${result.errors})` : ''}`);
+      toast({
+        title: 'Zadanie utworzone',
+        description: `Import ${domainList.length} domen dodany do kolejki. Przejdź do Zadań, aby śledzić postęp.`,
+      });
       setImportText('');
       setImportDialogOpen(false);
-      await loadDomains();
-      await loadStats();
+      navigate('/tasks');
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to import domains');
+      toast({
+        title: 'Błąd',
+        description: err instanceof Error ? err.message : 'Nie udało się utworzyć zadania importu',
+        variant: 'destructive',
+      });
     } finally {
       setImportLoading(false);
-      setImportProgress(null);
     }
   };
 

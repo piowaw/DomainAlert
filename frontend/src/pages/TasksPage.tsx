@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getJobs, deleteJob, type Job } from '@/lib/api';
+import { getJobs, deleteJob, processJob, type Job } from '@/lib/api';
 import { Loader2, Trash2, CheckCircle, XCircle, Clock, RefreshCw, Cog } from 'lucide-react';
 import {
   AlertDialog,
@@ -42,17 +42,34 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // Auto-refresh every 5 seconds if there are running/pending jobs
+  // Auto-process and refresh active jobs
   useEffect(() => {
-    const hasActiveJobs = jobs.some(j => j.status === 'pending' || j.status === 'processing');
-    if (!hasActiveJobs) return;
+    const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'processing');
+    if (activeJobs.length === 0) return;
     
-    const interval = setInterval(() => {
-      loadJobs();
-    }, 5000);
+    let cancelled = false;
     
-    return () => clearInterval(interval);
-  }, [jobs, loadJobs]);
+    async function processNext() {
+      if (cancelled) return;
+      for (const job of activeJobs) {
+        if (cancelled) return;
+        try {
+          await processJob(job.id, 20);
+        } catch {
+          // ignore errors, will retry
+        }
+      }
+      if (!cancelled) {
+        await loadJobs();
+        // Continue processing after a short delay
+        setTimeout(processNext, 1000);
+      }
+    }
+    
+    processNext();
+    
+    return () => { cancelled = true; };
+  }, [jobs.filter(j => j.status === 'pending' || j.status === 'processing').map(j => j.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   
   async function handleDelete(id: number) {
     try {

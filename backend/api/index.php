@@ -663,11 +663,12 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         $jobId = $db->lastInsertId();
         
         jsonResponse(['job' => [
-            'id' => $jobId,
+            'id' => (int)$jobId,
             'type' => $type,
             'status' => 'pending',
-            'total' => count($domains),
-            'processed' => 0
+            'total' => $total,
+            'processed' => 0,
+            'errors' => 0,
         ]], 201);
     }
     
@@ -701,46 +702,80 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
             jsonResponse(['job' => $job, 'message' => 'Job already completed']);
         }
         
-        $domains = json_decode($job['data'], true);
+        $jobDataDecoded = json_decode($job['data'], true);
         $processed = (int)$job['processed'];
         $errors = (int)$job['errors'];
+        $total = (int)$job['total'];
         
-        // Get batch of domains to process
-        $batch = array_slice($domains, $processed, $batchSize);
-        
-        foreach ($batch as $domainName) {
-            try {
-                $domainName = strtolower(trim($domainName));
-                $domainName = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $domainName);
-                $domainName = rtrim($domainName, '/');
-                
-                if (empty($domainName)) {
+        if ($job['type'] === 'import') {
+            // Import job: data is an array of domain names
+            $domainList = $jobDataDecoded;
+            $batch = array_slice($domainList, $processed, $batchSize);
+            
+            foreach ($batch as $domainName) {
+                try {
+                    $domainName = strtolower(trim($domainName));
+                    $domainName = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $domainName);
+                    $domainName = rtrim($domainName, '/');
+                    
+                    if (empty($domainName)) {
+                        $errors++;
+                        $processed++;
+                        continue;
+                    }
+                    
+                    $whoisData = $whois->lookup($domainName);
+                    
+                    $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
+                    $stmt->execute([
+                        $domainName,
+                        $whoisData['expiry_date'],
+                        $whoisData['is_registered'] ? 1 : 0,
+                        $user['id']
+                    ]);
+                    
+                    $processed++;
+                } catch (Exception $e) {
                     $errors++;
                     $processed++;
-                    continue;
                 }
-                
-                // Check WHOIS
-                $whoisData = $whois->lookup($domainName);
-                
-                // Insert domain
-                $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
-                $stmt->execute([
-                    $domainName,
-                    $whoisData['expiry_date'],
-                    $whoisData['is_registered'] ? 1 : 0,
-                    $user['id']
-                ]);
-                
-                $processed++;
-            } catch (Exception $e) {
-                $errors++;
-                $processed++;
+            }
+        } elseif ($job['type'] === 'whois_check') {
+            // Whois check job: data is { domain_ids: [...] }
+            $domainIds = $jobDataDecoded['domain_ids'] ?? [];
+            $batch = array_slice($domainIds, $processed, $batchSize);
+            
+            foreach ($batch as $domainId) {
+                try {
+                    $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
+                    $stmt->execute([$domainId]);
+                    $domain = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if (!$domain) {
+                        $errors++;
+                        $processed++;
+                        continue;
+                    }
+                    
+                    $whoisData = $whois->lookup($domain['domain']);
+                    
+                    $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+                    $stmt->execute([
+                        $whoisData['expiry_date'] ?? $domain['expiry_date'],
+                        $whoisData['is_registered'] ? 1 : 0,
+                        $domainId
+                    ]);
+                    
+                    $processed++;
+                } catch (Exception $e) {
+                    $errors++;
+                    $processed++;
+                }
             }
         }
         
         // Update job
-        $status = $processed >= count($domains) ? 'completed' : 'processing';
+        $status = $processed >= $total ? 'completed' : 'processing';
         $stmt = $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?");
         $stmt->execute([$status, $processed, $errors, $jobId]);
         
