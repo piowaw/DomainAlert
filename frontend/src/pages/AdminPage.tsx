@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
-import { getUsers, deleteUser, getInvitations, createInvitation, deleteInvitation, type User, type Invitation } from '@/lib/api';
+import { getUsers, deleteUser, createUser, getInvitations, createInvitation, deleteInvitation, type User, type Invitation } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -22,6 +22,13 @@ export default function AdminPage() {
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [newInviteLink, setNewInviteLink] = useState<string | null>(null);
+  
+  // User creation
+  const [userDialogOpen, setUserDialogOpen] = useState(false);
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserLoading, setNewUserLoading] = useState(false);
+  const [createdUserPassword, setCreatedUserPassword] = useState<string | null>(null);
+  const [createdUserEmail, setCreatedUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.is_admin) {
@@ -71,6 +78,24 @@ export default function AdminPage() {
       await loadData();
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete user');
+    }
+  };
+
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserEmail) return;
+    
+    setNewUserLoading(true);
+    try {
+      const result = await createUser(newUserEmail);
+      setCreatedUserEmail(result.user.email);
+      setCreatedUserPassword(result.password);
+      setNewUserEmail('');
+      await loadData();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to create user');
+    } finally {
+      setNewUserLoading(false);
     }
   };
 
@@ -270,11 +295,98 @@ export default function AdminPage() {
 
         {/* Users */}
         <Card>
-          <CardHeader>
-            <CardTitle>Użytkownicy</CardTitle>
-            <CardDescription>
-              Zarządzaj użytkownikami systemu
-            </CardDescription>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>Użytkownicy</CardTitle>
+              <CardDescription>
+                Zarządzaj użytkownikami systemu
+              </CardDescription>
+            </div>
+            <Dialog open={userDialogOpen} onOpenChange={(open) => {
+              setUserDialogOpen(open);
+              if (!open) {
+                setCreatedUserPassword(null);
+                setCreatedUserEmail(null);
+              }
+            }}>
+              <DialogTrigger asChild>
+                <Button>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Dodaj użytkownika
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                {createdUserPassword ? (
+                  <>
+                    <DialogHeader>
+                      <DialogTitle>Użytkownik utworzony!</DialogTitle>
+                      <DialogDescription>
+                        Zapisz hasło - nie będzie można go ponownie wyświetlić
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="py-4 space-y-4">
+                      <div>
+                        <Label>Email</Label>
+                        <Input value={createdUserEmail || ''} readOnly className="mt-2" />
+                      </div>
+                      <div>
+                        <Label>Hasło</Label>
+                        <div className="flex gap-2 mt-2">
+                          <Input value={createdUserPassword} readOnly className="font-mono" />
+                          <Button
+                            onClick={() => navigator.clipboard.writeText(createdUserPassword)}
+                          >
+                            <Copy className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button onClick={() => {
+                        setCreatedUserPassword(null);
+                        setCreatedUserEmail(null);
+                        setUserDialogOpen(false);
+                      }}>
+                        Zamknij
+                      </Button>
+                    </DialogFooter>
+                  </>
+                ) : (
+                  <form onSubmit={handleCreateUser}>
+                    <DialogHeader>
+                      <DialogTitle>Nowy użytkownik</DialogTitle>
+                      <DialogDescription>
+                        Hasło zostanie wygenerowane automatycznie
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="py-4">
+                      <Label htmlFor="newUserEmail">Email</Label>
+                      <Input
+                        id="newUserEmail"
+                        type="email"
+                        placeholder="user@example.com"
+                        value={newUserEmail}
+                        onChange={(e) => setNewUserEmail(e.target.value)}
+                        className="mt-2"
+                        required
+                      />
+                    </div>
+                    <DialogFooter>
+                      <Button type="submit" disabled={newUserLoading}>
+                        {newUserLoading ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Tworzenie...
+                          </>
+                        ) : (
+                          'Utwórz użytkownika'
+                        )}
+                      </Button>
+                    </DialogFooter>
+                  </form>
+                )}
+              </DialogContent>
+            </Dialog>
           </CardHeader>
           <CardContent>
             <Table>

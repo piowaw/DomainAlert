@@ -88,9 +88,6 @@ export default function LoginPage() {
                 </Link>
               </p>
             )}
-            <p className="text-xs text-muted-foreground text-center">
-              Domyślne dane: admin@example.com / admin123
-            </p>
           </CardFooter>
         </form>
       </Card>

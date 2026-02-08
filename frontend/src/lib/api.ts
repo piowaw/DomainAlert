@@ -95,6 +95,13 @@ export async function getUsers() {
   return apiCall<{ users: User[] }>('users');
 }
 
+export async function createUser(email: string) {
+  return apiCall<{ user: User; password: string }>('users', {
+    method: 'POST',
+    body: { email },
+  });
+}
+
 export async function deleteUser(id: number) {
   return apiCall<{ success: boolean }>(`users/${id}`, {
     method: 'DELETE',

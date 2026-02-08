@@ -289,6 +289,37 @@ function handleUsers(string $action, PDO $db, array $input, string $method): voi
         jsonResponse(['users' => $users]);
     }
     
+    // Create user with generated password
+    if ($action === '' && $method === 'POST') {
+        $email = $input['email'] ?? '';
+        
+        if (!$email) {
+            jsonResponse(['error' => 'Email is required'], 400);
+        }
+        
+        // Generate random password
+        $password = bin2hex(random_bytes(6)); // 12 character password
+        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+        
+        try {
+            $stmt = $db->prepare("INSERT INTO users (email, password) VALUES (?, ?)");
+            $stmt->execute([$email, $hashedPassword]);
+        } catch (PDOException $e) {
+            jsonResponse(['error' => 'Email already exists'], 400);
+        }
+        
+        $userId = $db->lastInsertId();
+        
+        jsonResponse([
+            'user' => [
+                'id' => $userId,
+                'email' => $email,
+                'is_admin' => false,
+            ],
+            'password' => $password // Return to admin so they can share it
+        ], 201);
+    }
+    
     if (is_numeric($action) && $method === 'DELETE') {
         if ($action == $user['id']) {
             jsonResponse(['error' => 'Cannot delete yourself'], 400);
