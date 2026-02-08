@@ -1005,5 +1005,81 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
         jsonResponse(['response' => $response ?? 'Ollama nie jest dostępna. Sprawdź czy serwer jest uruchomiony.']);
     }
     
+    // ====== AI Environment Management (admin only) ======
+    
+    // Install Ollama
+    if ($action === 'install' && $method === 'POST') {
+        requireAdmin();
+        $output = [];
+        $returnCode = 0;
+        
+        // Check if already installed
+        exec('which ollama 2>/dev/null', $checkOutput, $checkCode);
+        if ($checkCode === 0) {
+            jsonResponse(['success' => true, 'message' => 'Ollama jest już zainstalowana', 'output' => 'Ollama already installed at: ' . implode("\n", $checkOutput), 'already_installed' => true]);
+        }
+        
+        // Install Ollama
+        exec('curl -fsSL https://ollama.com/install.sh | sh 2>&1', $output, $returnCode);
+        
+        if ($returnCode === 0) {
+            jsonResponse(['success' => true, 'message' => 'Ollama zainstalowana pomyślnie', 'output' => implode("\n", $output)]);
+        } else {
+            jsonResponse(['success' => false, 'message' => 'Błąd instalacji Ollama', 'output' => implode("\n", $output)], 500);
+        }
+    }
+    
+    // Pull model
+    if ($action === 'pull-model' && $method === 'POST') {
+        requireAdmin();
+        $model = $input['model'] ?? OLLAMA_MODEL;
+        $output = [];
+        $returnCode = 0;
+        
+        exec("ollama pull {$model} 2>&1", $output, $returnCode);
+        
+        if ($returnCode === 0) {
+            jsonResponse(['success' => true, 'message' => "Model {$model} pobrany pomyślnie", 'output' => implode("\n", $output)]);
+        } else {
+            jsonResponse(['success' => false, 'message' => "Błąd pobierania modelu {$model}", 'output' => implode("\n", $output)], 500);
+        }
+    }
+    
+    // Restart Ollama
+    if ($action === 'restart' && $method === 'POST') {
+        requireAdmin();
+        $output = [];
+        $returnCode = 0;
+        
+        // Try systemctl first, then ollama serve
+        exec('systemctl restart ollama 2>&1', $output, $returnCode);
+        
+        if ($returnCode !== 0) {
+            // Fallback: kill and restart
+            exec('pkill ollama 2>/dev/null; nohup ollama serve > /dev/null 2>&1 & echo "Ollama restarted via process"', $output, $returnCode);
+        }
+        
+        // Wait a moment for Ollama to start
+        sleep(2);
+        
+        // Check if running
+        $status = $ai->getStatus();
+        
+        jsonResponse([
+            'success' => $status['ollama_running'],
+            'message' => $status['ollama_running'] ? 'Ollama zrestartowana pomyślnie' : 'Ollama nie odpowiada po restarcie',
+            'output' => implode("\n", $output),
+            'status' => $status
+        ]);
+    }
+    
+    // Stop Ollama
+    if ($action === 'stop' && $method === 'POST') {
+        requireAdmin();
+        $output = [];
+        exec('systemctl stop ollama 2>&1 || pkill ollama 2>&1', $output, $returnCode);
+        jsonResponse(['success' => true, 'message' => 'Ollama zatrzymana', 'output' => implode("\n", $output)]);
+    }
+    
     jsonResponse(['error' => 'Not found'], 404);
 }

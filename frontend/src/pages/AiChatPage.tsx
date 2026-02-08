@@ -9,6 +9,10 @@ import {
   getKnowledgeBase,
   addKnowledge,
   deleteKnowledge,
+  installOllama,
+  pullModel,
+  restartOllama,
+  stopOllama,
   type AiConversation,
   type AiMessage,
   type AiStatus,
@@ -36,6 +40,11 @@ import {
   XCircle,
   Cpu,
   Database,
+  Download,
+  RefreshCw,
+  Power,
+  PowerOff,
+  Terminal,
 } from 'lucide-react';
 
 export default function AiChatPage() {
@@ -61,6 +70,9 @@ export default function AiChatPage() {
   const [newKbType, setNewKbType] = useState('note');
   const [newKbDomain, setNewKbDomain] = useState('');
   
+  // AI Management
+  const [mgmtLoading, setMgmtLoading] = useState<string | null>(null);
+  const [mgmtOutput, setMgmtOutput] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
@@ -78,6 +90,27 @@ export default function AiChatPage() {
       const status = await getAiStatus();
       setAiStatus(status);
     } catch { /* ignore */ }
+  };
+
+  const handleMgmtAction = async (action: string, fn: () => Promise<{ success: boolean; message: string; output: string }>) => {
+    setMgmtLoading(action);
+    setMgmtOutput(null);
+    try {
+      const result = await fn();
+      setMgmtOutput(result.output);
+      toast({ 
+        title: result.success ? 'Sukces' : 'Błąd', 
+        description: result.message,
+        variant: result.success ? 'default' : 'destructive' 
+      });
+      await loadStatus();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Operacja nie powiodła się';
+      setMgmtOutput(msg);
+      toast({ title: 'Błąd', description: msg, variant: 'destructive' });
+    } finally {
+      setMgmtLoading(null);
+    }
   };
 
   const loadConversations = async () => {
@@ -553,9 +586,111 @@ export default function AiChatPage() {
               </CardContent>
             </Card>
 
+            {/* Management Panel */}
             <Card className="md:col-span-2">
               <CardHeader>
-                <CardTitle className="text-lg">Instrukcja instalacji</CardTitle>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Power className="h-4 w-4" /> Zarządzanie środowiskiem AI
+                </CardTitle>
+                <CardDescription>Instalacja, restart i zarządzanie Ollama z poziomu przeglądarki</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {/* Install Ollama */}
+                  <Button 
+                    variant={aiStatus?.ollama_running ? "outline" : "default"}
+                    className="h-auto py-3 flex flex-col items-center gap-1"
+                    disabled={mgmtLoading !== null}
+                    onClick={() => handleMgmtAction('install', installOllama)}
+                  >
+                    {mgmtLoading === 'install' ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <Download className="h-5 w-5" />
+                    )}
+                    <span className="text-sm font-medium">Zainstaluj Ollama</span>
+                    <span className="text-xs text-muted-foreground font-normal">Pobranie i instalacja</span>
+                  </Button>
+
+                  {/* Pull Model */}
+                  <Button 
+                    variant="outline"
+                    className="h-auto py-3 flex flex-col items-center gap-1"
+                    disabled={mgmtLoading !== null}
+                    onClick={() => handleMgmtAction('pull', () => pullModel())}
+                  >
+                    {mgmtLoading === 'pull' ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <Brain className="h-5 w-5" />
+                    )}
+                    <span className="text-sm font-medium">Pobierz model</span>
+                    <span className="text-xs text-muted-foreground font-normal">{aiStatus?.model || 'deepseek-r1:1.5b'}</span>
+                  </Button>
+
+                  {/* Restart Ollama */}
+                  <Button 
+                    variant="outline"
+                    className="h-auto py-3 flex flex-col items-center gap-1"
+                    disabled={mgmtLoading !== null}
+                    onClick={() => handleMgmtAction('restart', restartOllama)}
+                  >
+                    {mgmtLoading === 'restart' ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-5 w-5" />
+                    )}
+                    <span className="text-sm font-medium">Restart Ollama</span>
+                    <span className="text-xs text-muted-foreground font-normal">Uruchom ponownie</span>
+                  </Button>
+
+                  {/* Stop Ollama */}
+                  <Button 
+                    variant="destructive"
+                    className="h-auto py-3 flex flex-col items-center gap-1"
+                    disabled={mgmtLoading !== null || !aiStatus?.ollama_running}
+                    onClick={() => handleMgmtAction('stop', stopOllama)}
+                  >
+                    {mgmtLoading === 'stop' ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <PowerOff className="h-5 w-5" />
+                    )}
+                    <span className="text-sm font-medium">Zatrzymaj Ollama</span>
+                    <span className="text-xs font-normal opacity-80">Wyłącz serwer AI</span>
+                  </Button>
+                </div>
+
+                {/* Output Console */}
+                {mgmtOutput && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Terminal className="h-4 w-4" />
+                      <span>Wynik operacji</span>
+                    </div>
+                    <div className="bg-zinc-950 text-green-400 rounded-lg p-4 font-mono text-xs max-h-48 overflow-y-auto whitespace-pre-wrap">
+                      {mgmtOutput}
+                    </div>
+                  </div>
+                )}
+
+                {mgmtLoading && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>
+                      {mgmtLoading === 'install' && 'Instalowanie Ollama... (może potrwać kilka minut)'}
+                      {mgmtLoading === 'pull' && 'Pobieranie modelu... (może potrwać kilka minut)'}
+                      {mgmtLoading === 'restart' && 'Restartowanie Ollama...'}
+                      {mgmtLoading === 'stop' && 'Zatrzymywanie Ollama...'}
+                    </span>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="md:col-span-2">
+              <CardHeader>
+                <CardTitle className="text-lg">Instrukcja ręcznej instalacji</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="bg-muted rounded-lg p-4 font-mono text-sm space-y-1">

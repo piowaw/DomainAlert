@@ -483,3 +483,31 @@ export async function quickAiChat(message: string) {
     body: { message },
   });
 }
+
+// AI Environment Management
+export interface AiManagementResult {
+  success: boolean;
+  message: string;
+  output: string;
+  already_installed?: boolean;
+  status?: AiStatus;
+}
+
+export async function installOllama() {
+  return apiCall<AiManagementResult>('ai/install', { method: 'POST' });
+}
+
+export async function pullModel(model?: string) {
+  return apiCall<AiManagementResult>('ai/pull-model', {
+    method: 'POST',
+    body: model ? { model } : {},
+  });
+}
+
+export async function restartOllama() {
+  return apiCall<AiManagementResult>('ai/restart', { method: 'POST' });
+}
+
+export async function stopOllama() {
+  return apiCall<AiManagementResult>('ai/stop', { method: 'POST' });
+}
