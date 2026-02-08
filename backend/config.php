@@ -110,10 +110,38 @@ function verifyJWT(string $token): ?array {
 }
 
 function getAuthUser(): ?array {
-    $headers = getallheaders();
-    $authHeader = $headers['Authorization'] ?? '';
+    $authHeader = '';
     
-    if (preg_match('/Bearer\s+(.+)/', $authHeader, $matches)) {
+    // Try multiple methods to get Authorization header
+    if (function_exists('getallheaders')) {
+        $headers = getallheaders();
+        // Check both cases
+        $authHeader = $headers['Authorization'] ?? $headers['authorization'] ?? '';
+    }
+    
+    // Fallback for servers where getallheaders doesn't work
+    if (empty($authHeader) && isset($_SERVER['HTTP_AUTHORIZATION'])) {
+        $authHeader = $_SERVER['HTTP_AUTHORIZATION'];
+    }
+    
+    // Apache fallback
+    if (empty($authHeader) && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+        $authHeader = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+    }
+    
+    // Another Apache mod_rewrite fallback
+    if (empty($authHeader)) {
+        $requestHeaders = [];
+        foreach ($_SERVER as $key => $value) {
+            if (substr($key, 0, 5) === 'HTTP_') {
+                $header = str_replace(' ', '-', ucwords(str_replace('_', ' ', strtolower(substr($key, 5)))));
+                $requestHeaders[$header] = $value;
+            }
+        }
+        $authHeader = $requestHeaders['Authorization'] ?? '';
+    }
+    
+    if (preg_match('/Bearer\s+(.+)/i', $authHeader, $matches)) {
         return verifyJWT($matches[1]);
     }
     
