@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { getJobs, deleteJob, processJob, resumeJob, type Job } from '@/lib/api';
-import { Loader2, Trash2, CheckCircle, XCircle, Clock, RefreshCw, Cog, Play } from 'lucide-react';
+import { getJobs, deleteJob, processJob, type Job } from '@/lib/api';
+import { Loader2, Trash2, CheckCircle, XCircle, Clock, RefreshCw, Cog } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,11 +22,19 @@ export default function TasksPage() {
   const { toast } = useToast();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  // Real-time counters updated by workers (faster than polling)
+  const [liveProgress, setLiveProgress] = useState<Record<number, { processed: number; errors: number; status: string }>>({});
   
   const loadJobs = useCallback(async () => {
     try {
       const result = await getJobs();
       setJobs(result.jobs);
+      // Sync live progress from server data
+      const lp: Record<number, { processed: number; errors: number; status: string }> = {};
+      for (const j of result.jobs) {
+        lp[j.id] = { processed: j.processed, errors: j.errors, status: j.status };
+      }
+      setLiveProgress(lp);
     } catch (err) {
       toast({
         title: 'Błąd',
@@ -42,10 +50,9 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // Parallel workers: fire N concurrent processJob requests continuously
-  // Each request processes batch_size domains with 20 concurrent RDAP
-  // 10 workers × 20 domains × 20 RDAP = 200 simultaneous lookups
-  const NUM_WORKERS = 10;
+  // 100 parallel workers — each processes batch_size=20 with 20 concurrent RDAP
+  // 100 × 20 × 20 = 40,000 simultaneous RDAP connections (uses the 50GB RAM)
+  const NUM_WORKERS = 100;
   const BATCH_SIZE = 20;
   
   useEffect(() => {
@@ -54,40 +61,46 @@ export default function TasksPage() {
     
     let cancelled = false;
     
-    // Each worker is an async loop that continuously processes batches
-    async function worker(job: Job) {
+    // Worker: loops continuously, updates live counter on every response
+    async function worker(jobId: number) {
       while (!cancelled) {
         try {
-          const result = await processJob(job.id, BATCH_SIZE);
+          const result = await processJob(jobId, BATCH_SIZE);
+          // Update live counter immediately (no waiting for poll)
+          setLiveProgress(prev => ({
+            ...prev,
+            [jobId]: {
+              processed: result.job.processed,
+              errors: result.job.errors,
+              status: result.job.status,
+            }
+          }));
           if (result.job.status === 'completed' || result.message === 'completed') {
-            break; // job done
+            break;
           }
           if (result.message === 'batch claimed by another worker') {
-            // Contention — tiny delay then retry
-            await new Promise(r => setTimeout(r, 100));
+            await new Promise(r => setTimeout(r, 50));
           }
         } catch {
-          // Error — small delay then retry
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise(r => setTimeout(r, 300));
         }
       }
     }
     
-    // Launch workers for each active job
+    // Launch 100 workers per active job
     const allWorkers: Promise<void>[] = [];
     for (const job of activeJobs) {
       for (let i = 0; i < NUM_WORKERS; i++) {
-        allWorkers.push(worker(job));
+        allWorkers.push(worker(job.id));
       }
     }
     
-    // Poll for UI updates
+    // Full refresh every 5s (live counters handle real-time updates)
     const interval = setInterval(async () => {
       if (cancelled) return;
       await loadJobs();
-    }, 2000);
+    }, 5000);
     
-    // When all workers finish, do a final refresh
     Promise.all(allWorkers).then(() => { if (!cancelled) loadJobs(); });
     
     return () => { cancelled = true; clearInterval(interval); };
@@ -110,24 +123,7 @@ export default function TasksPage() {
     }
   }
   
-  async function handleResume(id: number) {
-    try {
-      const result = await resumeJob(id);
-      toast({
-        title: 'Wznowiono',
-        description: result.message || 'Zadanie zostanie wznowione',
-      });
-      await loadJobs();
-    } catch (err) {
-      toast({
-        title: 'Błąd',
-        description: err instanceof Error ? err.message : 'Nie udało się wznowić zadania',
-        variant: 'destructive',
-      });
-    }
-  }
-  
-  function getStatusBadge(status: Job['status']) {
+  function getStatusBadge(status: string) {
     switch (status) {
       case 'pending':
         return <Badge variant="secondary"><Clock className="h-3 w-3 mr-1" /> Oczekuje</Badge>;
@@ -176,7 +172,7 @@ export default function TasksPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Zadania</h1>
-          <p className="text-muted-foreground">Twoje zadania w tle</p>
+          <p className="text-muted-foreground">Zadania w tle ({NUM_WORKERS} workerów)</p>
         </div>
         <Button variant="outline" onClick={loadJobs}>
           <RefreshCw className="h-4 w-4 mr-2" />
@@ -193,8 +189,13 @@ export default function TasksPage() {
       ) : (
         <div className="space-y-4">
           {jobs.map(job => {
-            const progress = job.total > 0 ? (job.processed / job.total) * 100 : 0;
-            const isActive = job.status === 'pending' || job.status === 'processing';
+            // Use live progress if available (updated by workers in real-time)
+            const live = liveProgress[job.id];
+            const currentProcessed = live ? live.processed : job.processed;
+            const currentErrors = live ? live.errors : job.errors;
+            const currentStatus = live ? live.status : job.status;
+            const progress = job.total > 0 ? (currentProcessed / job.total) * 100 : 0;
+            const isActive = currentStatus === 'pending' || currentStatus === 'processing';
             
             return (
               <Card key={job.id}>
@@ -208,32 +209,25 @@ export default function TasksPage() {
                         Utworzono: {formatDate(job.created_at)}
                       </CardDescription>
                     </div>
-                    {getStatusBadge(job.status)}
+                    {getStatusBadge(currentStatus)}
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Progress bar */}
+                  {/* Progress bar with real-time counter */}
                   <div className="space-y-2">
                     <div className="flex justify-between text-sm">
-                      <span>Postęp: {job.processed} / {job.total}</span>
-                      <span>{Math.round(progress)}%</span>
+                      <span className="font-mono font-bold text-base">
+                        {currentProcessed.toLocaleString('pl-PL')} / {job.total.toLocaleString('pl-PL')}
+                      </span>
+                      <span className="font-mono font-bold text-base">{Math.round(progress)}%</span>
                     </div>
-                    <Progress value={progress} className="h-2" />
+                    <Progress value={progress} className="h-3" />
                   </div>
                   
-                  {/* Active job info */}
-                  {isActive && (
-                    <p className="text-sm text-muted-foreground">
-                      {job.status === 'processing' && job.processed < job.total
-                        ? `Przetwarzanie... (${job.processed}/${job.total})`
-                        : 'Zadanie jest przetwarzane w tle na serwerze...'}
-                    </p>
-                  )}
-                  
                   {/* Error count */}
-                  {job.errors > 0 && (
+                  {currentErrors > 0 && (
                     <p className="text-sm text-red-500">
-                      Błędy: {job.errors}
+                      Błędy: {currentErrors}
                     </p>
                   )}
                   
@@ -249,18 +243,6 @@ export default function TasksPage() {
                   
                   {/* Actions */}
                   <div className="flex gap-2">
-                    {job.status === 'processing' && job.processed < job.total && (
-                      <Button size="sm" variant="outline" onClick={() => handleResume(job.id)}>
-                        <Play className="h-4 w-4 mr-2" />
-                        Wznów
-                      </Button>
-                    )}
-                    {job.status === 'failed' && (
-                      <Button size="sm" variant="outline" onClick={() => handleResume(job.id)}>
-                        <Play className="h-4 w-4 mr-2" />
-                        Ponów
-                      </Button>
-                    )}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button size="sm" variant="destructive">
