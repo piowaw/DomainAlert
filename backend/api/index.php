@@ -116,6 +116,9 @@ try {
         case 'profile':
             handleProfile($db, $input, $method);
             break;
+        case 'migrate':
+            handleMigrate($db);
+            break;
         default:
             jsonResponse(['error' => 'Not found'], 404);
     }
@@ -1293,4 +1296,107 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
     }
     
     jsonResponse(['error' => 'Not found'], 404);
+}
+
+// ── Migration endpoint — visit /api/migrate in browser ──
+function handleMigrate(PDO $mysql): void {
+    header_remove('Content-Type');
+    header('Content-Type: text/html; charset=utf-8');
+    echo "<pre style='font-family:monospace;font-size:14px;padding:20px;'>";
+    $nl = "<br>";
+    
+    echo "=== DomainAlert MySQL Status ===$nl$nl";
+    
+    // Show MySQL tables
+    $tables = ['users', 'domains', 'notifications', 'invitations', 'jobs'];
+    foreach ($tables as $table) {
+        $result = $mysql->query("SHOW TABLES LIKE '$table'");
+        $count = (int)$mysql->query("SELECT COUNT(*) FROM $table")->fetchColumn();
+        $icon = $result->fetch() ? '✓' : '✗';
+        echo "$icon Table '$table' — $count rows$nl";
+    }
+    
+    echo "{$nl}── SQLite Migration ──$nl";
+    
+    // Find SQLite file
+    $paths = [
+        __DIR__ . '/../database.sqlite',
+        __DIR__ . '/../../database.sqlite',
+    ];
+    if (isset($_SERVER['DOCUMENT_ROOT'])) {
+        $paths[] = $_SERVER['DOCUMENT_ROOT'] . '/database.sqlite';
+    }
+    
+    $sqlitePath = null;
+    foreach ($paths as $p) {
+        if (file_exists($p)) {
+            $sqlitePath = realpath($p);
+            break;
+        }
+    }
+    
+    if (!$sqlitePath) {
+        echo "No SQLite database found — nothing to migrate.$nl";
+        echo "Checked:$nl";
+        foreach ($paths as $p) echo "  $p$nl";
+        echo "{$nl}✓ MySQL is ready to use!$nl";
+        echo "</pre>";
+        exit;
+    }
+    
+    echo "Found SQLite: $sqlitePath$nl";
+    
+    if (!extension_loaded('pdo_sqlite')) {
+        echo "✗ pdo_sqlite extension not available — cannot read SQLite.$nl";
+        echo "  Enable it in Plesk PHP settings or import via phpMyAdmin.$nl";
+        echo "</pre>";
+        exit;
+    }
+    
+    $sqlite = new PDO('sqlite:' . $sqlitePath);
+    $sqlite->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    
+    $tableConfigs = [
+        'users' => 'id, email, password, is_admin, created_at',
+        'domains' => 'id, domain, expiry_date, is_registered, last_checked, added_by',
+        'notifications' => 'id, domain_id, type, message, is_read, created_at',
+        'invitations' => 'id, email, token, invited_by, used, created_at',
+        'jobs' => 'id, user_id, type, status, total, processed, errors, data, result, created_at, updated_at',
+    ];
+    
+    $totalMigrated = 0;
+    foreach ($tableConfigs as $table => $cols) {
+        $check = $sqlite->query("SELECT name FROM sqlite_master WHERE type='table' AND name='$table'");
+        if (!$check->fetch()) {
+            echo "⏭ '$table' not in SQLite$nl";
+            continue;
+        }
+        
+        $colList = explode(', ', $cols);
+        $placeholders = implode(',', array_fill(0, count($colList), '?'));
+        $insertSql = "INSERT IGNORE INTO $table ($cols) VALUES ($placeholders)";
+        
+        $rows = $sqlite->query("SELECT $cols FROM $table ORDER BY id")->fetchAll(PDO::FETCH_NUM);
+        $count = count($rows);
+        $migrated = 0;
+        
+        $mysql->beginTransaction();
+        $stmt = $mysql->prepare($insertSql);
+        foreach ($rows as $row) {
+            $stmt->execute($row);
+            if ($stmt->rowCount() > 0) $migrated++;
+        }
+        $mysql->commit();
+        
+        // Fix auto-increment
+        $maxId = (int)$mysql->query("SELECT COALESCE(MAX(id),0) FROM $table")->fetchColumn();
+        if ($maxId > 0) $mysql->exec("ALTER TABLE $table AUTO_INCREMENT = " . ($maxId + 1));
+        
+        echo "✓ '$table': $migrated migrated / $count total$nl";
+        $totalMigrated += $migrated;
+    }
+    
+    echo "{$nl}=== Done! $totalMigrated rows migrated ===$nl";
+    echo "</pre>";
+    exit;
 }
