@@ -758,10 +758,11 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         jsonResponse(['job' => $job]);
     }
     
-    // Process a batch of a pending job — parallel RDAP via RdapEngine
+    // Process a pending job — processes ALL remaining domains using parallel RDAP
+    // The frontend just triggers this and polls for status — batch_size is ignored
+    // Progress is updated in DB every chunk so polling shows real-time progress
     if ($action === 'process' && $method === 'POST') {
         $jobId = $input['job_id'] ?? 0;
-        $batchSize = min(2000, max(1, $input['batch_size'] ?? 500));
         
         $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
         $stmt->execute([$jobId]);
@@ -775,22 +776,41 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
             jsonResponse(['job' => $job, 'message' => 'Job already completed']);
         }
         
+        // If already processing (another request is handling it), just return status
+        if ($job['status'] === 'processing') {
+            jsonResponse(['job' => $job, 'message' => 'Already processing']);
+        }
+        
         // Mark as processing
         $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
         
-        $rdap = new RdapEngine(200); // 200 concurrent RDAP requests
+        // Flush response headers so frontend isn't blocked — we continue processing
+        // (PHP built-in server doesn't support this well, but we'll return at the end anyway)
+        
+        $rdap = new RdapEngine(200); // 200 concurrent RDAP requests rolling window
         $jobDataDecoded = json_decode($job['data'], true);
         $processed = (int)$job['processed'];
         $errors = (int)$job['errors'];
         $total = (int)$job['total'];
         
+        // Internal chunk size for DB progress updates (RDAP still runs 200 concurrent)
+        $PROGRESS_CHUNK = 500;
+        
+        // Helper to update job progress in DB
+        $updateProgress = function() use ($db, $jobId, &$processed, &$errors, $total) {
+            $status = $processed >= $total ? 'completed' : 'processing';
+            $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")
+               ->execute([$status, $processed, $errors, $jobId]);
+        };
+        
         if ($job['type'] === 'import') {
             $domainList = $jobDataDecoded;
-            $batch = array_slice($domainList, $processed, $batchSize);
+            // Process ALL remaining domains
+            $remaining = array_slice($domainList, $processed);
             
-            // 1. Clean all domain names
+            // 1. Clean all domain names first
             $cleanNames = [];
-            foreach ($batch as $raw) {
+            foreach ($remaining as $raw) {
                 $name = strtolower(trim($raw));
                 $name = preg_replace('/^(https?:\/\/)?(www\.)?/', '', $name);
                 $name = rtrim($name, '/');
@@ -819,12 +839,17 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                 }
             }
             
-            // 3. Parallel RDAP lookup (200 concurrent via rolling window)
-            if (!empty($toCheck)) {
-                $rdapResults = $rdap->lookupBatch($toCheck);
+            // Update progress after filtering
+            $updateProgress();
+            
+            // 3. Process in chunks for progress updates, each chunk uses 200-concurrent RDAP
+            $chunks = array_chunk($toCheck, $PROGRESS_CHUNK);
+            foreach ($chunks as $chunk) {
+                // Parallel RDAP — 200 concurrent rolling window
+                $rdapResults = $rdap->lookupBatch($chunk);
                 
-                // 4. Fallback for RDAP misses
-                foreach ($toCheck as $name) {
+                // Sequential fallback for RDAP misses (should be very few)
+                foreach ($chunk as $name) {
                     if (($rdapResults[$name] ?? null) === null) {
                         try {
                             $rdapResults[$name] = $whois->lookup($name);
@@ -835,10 +860,10 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                     }
                 }
                 
-                // 5. Batch INSERT in transaction
+                // Batch INSERT this chunk
                 $db->beginTransaction();
                 $ins = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
-                foreach ($toCheck as $name) {
+                foreach ($chunk as $name) {
                     $data = $rdapResults[$name] ?? null;
                     if ($data) {
                         $ins->execute([$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0, $user['id']]);
@@ -846,53 +871,65 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                     $processed++;
                 }
                 $db->commit();
+                
+                // Update progress in DB so polling frontend sees it
+                $updateProgress();
             }
             
         } elseif ($job['type'] === 'whois_check') {
             $domainIds = $jobDataDecoded['domain_ids'] ?? [];
-            $batchIds = array_slice($domainIds, $processed, $batchSize);
+            $remainingIds = array_slice($domainIds, $processed);
             
-            // 1. Fetch domain records in bulk
+            // Fetch all domain records in bulk
             $rows = [];
-            foreach (array_chunk($batchIds, 900) as $chunk) {
+            foreach (array_chunk($remainingIds, 900) as $chunk) {
                 $ph = implode(',', array_fill(0, count($chunk), '?'));
                 $s = $db->prepare("SELECT * FROM domains WHERE id IN ($ph)");
                 $s->execute($chunk);
                 foreach ($s->fetchAll(PDO::FETCH_ASSOC) as $row) $rows[$row['domain']] = $row;
             }
             
-            $missing = count($batchIds) - count($rows);
+            $missing = count($remainingIds) - count($rows);
             $errors += $missing;
             $processed += $missing;
             
             if (!empty($rows)) {
                 $names = array_keys($rows);
                 
-                // 2. Parallel RDAP
-                $rdapResults = $rdap->lookupBatch($names);
-                
-                // 3. Fallback for misses
-                foreach ($names as $name) {
-                    if (($rdapResults[$name] ?? null) === null) {
-                        try { $rdapResults[$name] = $whois->lookup($name); } catch (Exception $e) { $errors++; }
+                // Process in chunks for progress updates
+                $nameChunks = array_chunk($names, $PROGRESS_CHUNK);
+                foreach ($nameChunks as $nameChunk) {
+                    // Parallel RDAP — 200 concurrent
+                    $rdapResults = $rdap->lookupBatch($nameChunk);
+                    
+                    // Fallback for misses
+                    foreach ($nameChunk as $name) {
+                        if (($rdapResults[$name] ?? null) === null) {
+                            try { $rdapResults[$name] = $whois->lookup($name); } catch (Exception $e) { $errors++; }
+                        }
                     }
-                }
-                
-                // 4. Batch UPDATE in transaction
-                $db->beginTransaction();
-                $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
-                foreach ($rows as $name => $row) {
-                    $data = $rdapResults[$name] ?? null;
-                    if ($data) {
-                        $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
+                    
+                    // Batch UPDATE
+                    $db->beginTransaction();
+                    $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+                    foreach ($nameChunk as $name) {
+                        if (!isset($rows[$name])) { $processed++; continue; }
+                        $row = $rows[$name];
+                        $data = $rdapResults[$name] ?? null;
+                        if ($data) {
+                            $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
+                        }
+                        $processed++;
                     }
-                    $processed++;
+                    $db->commit();
+                    
+                    // Update progress
+                    $updateProgress();
                 }
-                $db->commit();
             }
         }
         
-        // Update job status
+        // Final status update
         $status = $processed >= $total ? 'completed' : 'processing';
         $db->prepare("UPDATE jobs SET status = ?, processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$status, $processed, $errors, $jobId]);
         

@@ -42,33 +42,29 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // Auto-process and refresh active jobs
+  // Kick off pending jobs and poll active ones for status
   useEffect(() => {
     const activeJobs = jobs.filter(j => j.status === 'pending' || j.status === 'processing');
     if (activeJobs.length === 0) return;
     
     let cancelled = false;
+    const kickedOff = new Set<number>();
     
-    async function processNext() {
-      if (cancelled) return;
-      for (const job of activeJobs) {
-        if (cancelled) return;
-        try {
-          await processJob(job.id, 500);
-        } catch {
-          // ignore errors, will retry
-        }
-      }
-      if (!cancelled) {
-        await loadJobs();
-        // Continue processing after a short delay
-        setTimeout(processNext, 1000);
+    // Fire-and-forget: kick off processing for pending jobs (backend handles ALL domains)
+    for (const job of activeJobs) {
+      if (job.status === 'pending' && !kickedOff.has(job.id)) {
+        kickedOff.add(job.id);
+        processJob(job.id).catch(() => {}); // fire and forget
       }
     }
     
-    processNext();
+    // Poll for status updates independently (backend updates progress every ~500 domains)
+    const interval = setInterval(async () => {
+      if (cancelled) return;
+      await loadJobs();
+    }, 2000);
     
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearInterval(interval); };
   }, [jobs.filter(j => j.status === 'pending' || j.status === 'processing').map(j => j.id).join(',')]); // eslint-disable-line react-hooks/exhaustive-deps
   
   async function handleDelete(id: number) {
