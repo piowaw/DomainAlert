@@ -1,5 +1,12 @@
 <?php
-// Database configuration
+// Database configuration — MySQL
+define('DB_HOST', 'localhost');
+define('DB_NAME', 'domainalert');
+define('DB_USER', 'domainalert');
+define('DB_PASS', 'omainalert');
+define('DB_CHARSET', 'utf8mb4');
+
+// Legacy SQLite path (used only by migration script)
 define('DB_PATH', __DIR__ . '/database.sqlite');
 
 // NTFY configuration - zmień NTFY_TOPIC na swój własny temat!
@@ -34,81 +41,89 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-// Initialize database
+// Initialize database — MySQL
 function initDatabase(): PDO {
-    $db = new PDO('sqlite:' . DB_PATH);
+    $dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=" . DB_CHARSET;
+    $db = new PDO($dsn, DB_USER, DB_PASS);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     
-    // Critical for 100 concurrent workers:
-    $db->exec("PRAGMA journal_mode=WAL");          // Allow concurrent reads + 1 writer
-    $db->exec("PRAGMA busy_timeout=30000");         // Wait up to 30s for locks instead of failing
-    $db->exec("PRAGMA synchronous=NORMAL");         // Faster writes (safe with WAL)
-    $db->exec("PRAGMA cache_size=-64000");           // 64MB cache
-    $db->exec("PRAGMA temp_store=MEMORY");           // Temp tables in RAM
+    // MySQL performance tuning
+    $db->exec("SET SESSION innodb_lock_wait_timeout = 30");
+    $db->exec("SET SESSION wait_timeout = 600");
     
     $db->exec("
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            is_admin INTEGER DEFAULT 0,
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            email VARCHAR(255) UNIQUE NOT NULL,
+            password VARCHAR(255) NOT NULL,
+            is_admin TINYINT(1) DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    
+    $db->exec("
         CREATE TABLE IF NOT EXISTS invitations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            token TEXT UNIQUE NOT NULL,
-            email TEXT,
-            created_by INTEGER,
-            used INTEGER DEFAULT 0,
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            token VARCHAR(255) UNIQUE NOT NULL,
+            email VARCHAR(255),
+            created_by INT,
+            used TINYINT(1) DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (created_by) REFERENCES users(id)
-        );
-        
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    
+    $db->exec("
         CREATE TABLE IF NOT EXISTS domains (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain TEXT UNIQUE NOT NULL,
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            domain VARCHAR(255) UNIQUE NOT NULL,
             expiry_date DATE,
-            is_registered INTEGER DEFAULT 1,
+            is_registered TINYINT(1) DEFAULT 1,
             last_checked DATETIME,
-            added_by INTEGER,
+            added_by INT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (added_by) REFERENCES users(id)
-        );
-        
+            FOREIGN KEY (added_by) REFERENCES users(id),
+            INDEX idx_expiry (expiry_date),
+            INDEX idx_registered (is_registered),
+            INDEX idx_last_checked (last_checked)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+    
+    $db->exec("
         CREATE TABLE IF NOT EXISTS notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain_id INTEGER,
-            type TEXT,
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            domain_id INT,
+            type VARCHAR(50),
             message TEXT,
             sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (domain_id) REFERENCES domains(id)
-        );
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
     
-    // Jobs table (separate exec to ensure creation on existing databases)
     $db->exec("
         CREATE TABLE IF NOT EXISTS jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            type TEXT NOT NULL,
-            status TEXT DEFAULT 'pending',
-            total INTEGER DEFAULT 0,
-            processed INTEGER DEFAULT 0,
-            errors INTEGER DEFAULT 0,
-            data TEXT,
-            result TEXT,
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            user_id INT NOT NULL,
+            type VARCHAR(50) NOT NULL,
+            status VARCHAR(20) DEFAULT 'pending',
+            total INT DEFAULT 0,
+            processed INT DEFAULT 0,
+            errors INT DEFAULT 0,
+            data LONGTEXT,
+            result LONGTEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        );
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            INDEX idx_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
     
     // Create default admin if not exists
     $stmt = $db->query("SELECT COUNT(*) FROM users WHERE is_admin = 1");
     if ($stmt->fetchColumn() == 0) {
         $hashedPassword = password_hash('admin123', PASSWORD_DEFAULT);
-        $db->exec("INSERT INTO users (email, password, is_admin) VALUES ('admin@example.com', '$hashedPassword', 1)");
+        $db->prepare("INSERT INTO users (email, password, is_admin) VALUES (?, ?, 1)")->execute(['admin@example.com', $hashedPassword]);
     }
     
     return $db;

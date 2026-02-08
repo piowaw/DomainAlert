@@ -50,9 +50,9 @@ export default function TasksPage() {
     loadJobs();
   }, []);
   
-  // 6 parallel workers × 100 batch × 30 concurrent RDAP = 18,000 simultaneous lookups
-  // Fewer workers = less SQLite write contention, bigger batches = more work per lock
-  const NUM_WORKERS = 6;
+  // 50 parallel workers × 100 batch × 50 concurrent RDAP = massive throughput
+  // MySQL handles concurrent writes natively — no locking issues
+  const NUM_WORKERS = 50;
   const BATCH_SIZE = 100;
   
   useEffect(() => {

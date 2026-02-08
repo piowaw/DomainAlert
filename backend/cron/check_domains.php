@@ -72,7 +72,7 @@ function processBatch(PDO $db, WhoisService $whois, RdapEngine $rdap, Notificati
     
     // Batch update via transaction
     $db->beginTransaction();
-    $updateStmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+    $updateStmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE id = ?");
     $checked = 0;
     
     foreach ($domainRows as $row) {
@@ -108,10 +108,6 @@ log_msg("=== Domain Checker ===");
 log_msg("Concurrency: $concurrency | Workers: $numWorkers | Stale batch: $staleBatch");
 
 $db = initDatabase();
-$db->exec("PRAGMA journal_mode=WAL");
-$db->exec("PRAGMA synchronous=NORMAL");
-$db->exec("PRAGMA cache_size=-64000");
-$db->exec("PRAGMA temp_store=MEMORY");
 
 $whois = new WhoisService();
 $rdap = new RdapEngine($concurrency);
@@ -133,7 +129,7 @@ do {
     }
     
     // 2) Stale domains (not checked in 24h) — large batches
-    $stmt = $db->prepare("SELECT * FROM domains WHERE last_checked < datetime('now', '-24 hours') OR last_checked IS NULL LIMIT ?");
+    $stmt = $db->prepare("SELECT * FROM domains WHERE last_checked < DATE_SUB(NOW(), INTERVAL 24 HOUR) OR last_checked IS NULL LIMIT ?");
     $stmt->execute([$staleBatch]);
     $stale = $stmt->fetchAll(PDO::FETCH_ASSOC);
     

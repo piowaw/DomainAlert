@@ -6,7 +6,7 @@
  *   - Rolling-window curl_multi: 200 concurrent RDAP requests per process
  *   - Multi-process via pcntl_fork: 8 child processes (configurable)
  *   - 8 workers × 200 concurrent = 1600 simultaneous RDAP requests
- *   - Batched SQLite writes via transactions (100x faster than individual INSERTs)
+ *   - Batched MySQL writes via transactions (100x faster than individual INSERTs)
  *   - IANA RDAP bootstrap for auto-discovering unknown TLD servers
  *   - WHOIS fallback only for domains where RDAP truly fails
  * 
@@ -56,7 +56,7 @@ function processImportJob(PDO $db, WhoisService $whois, RdapEngine $rdap, array 
     
     log_msg("IMPORT JOB #$jobId — {$processed}/{$total} done | concurrency={$rdap->getConcurrency()} workers=$numWorkers");
     
-    $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
+    $db->prepare("UPDATE jobs SET status = 'processing', updated_at = NOW() WHERE id = ?")->execute([$jobId]);
     
     $lastProgressUpdate = time();
     
@@ -132,7 +132,7 @@ function processImportJob(PDO $db, WhoisService $whois, RdapEngine $rdap, array 
         }
     }
     
-    $db->prepare("UPDATE jobs SET status = 'completed', processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
+    $db->prepare("UPDATE jobs SET status = 'completed', processed = ?, errors = ?, updated_at = NOW() WHERE id = ?")->execute([$processed, $errors, $jobId]);
     log_msg("JOB #$jobId COMPLETE — $processed domains, $errors errors");
 }
 
@@ -149,7 +149,7 @@ function processWhoisCheckJob(PDO $db, WhoisService $whois, RdapEngine $rdap, ar
     
     log_msg("WHOIS CHECK JOB #$jobId — {$processed}/{$total} done | concurrency={$rdap->getConcurrency()} workers=$numWorkers");
     
-    $db->prepare("UPDATE jobs SET status = 'processing', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
+    $db->prepare("UPDATE jobs SET status = 'processing', updated_at = NOW() WHERE id = ?")->execute([$jobId]);
     
     $lastProgressUpdate = time();
     
@@ -189,7 +189,7 @@ function processWhoisCheckJob(PDO $db, WhoisService $whois, RdapEngine $rdap, ar
         
         // 3. Fallback + batch update
         $db->beginTransaction();
-        $updateStmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+        $updateStmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE id = ?");
         
         foreach ($names as $name) {
             try {
@@ -220,7 +220,7 @@ function processWhoisCheckJob(PDO $db, WhoisService $whois, RdapEngine $rdap, ar
         }
     }
     
-    $db->prepare("UPDATE jobs SET status = 'completed', processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
+    $db->prepare("UPDATE jobs SET status = 'completed', processed = ?, errors = ?, updated_at = NOW() WHERE id = ?")->execute([$processed, $errors, $jobId]);
     log_msg("JOB #$jobId COMPLETE — $processed checked, $errors errors");
 }
 
@@ -230,9 +230,9 @@ function processWhoisCheckJob(PDO $db, WhoisService $whois, RdapEngine $rdap, ar
 function filterExistingDomains(PDO $db, array $domainNames): array {
     if (empty($domainNames)) return [];
     
-    // SQLite max variables is 999, chunk if needed
     $existing = [];
-    foreach (array_chunk($domainNames, 900) as $chunk) {
+    // MySQL handles large IN clauses fine, but chunk at 10000 for memory
+    foreach (array_chunk($domainNames, 10000) as $chunk) {
         $placeholders = implode(',', array_fill(0, count($chunk), '?'));
         $stmt = $db->prepare("SELECT domain FROM domains WHERE domain IN ($placeholders)");
         $stmt->execute($chunk);
@@ -249,7 +249,7 @@ function filterExistingDomains(PDO $db, array $domainNames): array {
  */
 function batchInsertDomains(PDO $db, array $rdapResults, array $names, int $userId): int {
     $db->beginTransaction();
-    $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
+    $stmt = $db->prepare("INSERT IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, NOW(), ?)");
     
     $count = 0;
     foreach ($names as $name) {
@@ -270,7 +270,7 @@ function batchInsertDomains(PDO $db, array $rdapResults, array $names, int $user
 }
 
 function updateProgress(PDO $db, int $jobId, int $processed, int $errors): void {
-    $db->prepare("UPDATE jobs SET processed = ?, errors = ?, updated_at = datetime('now') WHERE id = ?")->execute([$processed, $errors, $jobId]);
+    $db->prepare("UPDATE jobs SET processed = ?, errors = ?, updated_at = NOW() WHERE id = ?")->execute([$processed, $errors, $jobId]);
 }
 
 function getNextJob(PDO $db): ?array {
@@ -285,11 +285,6 @@ log_msg("Max simultaneous requests: " . ($concurrency * $numWorkers));
 
 try {
     $db = initDatabase();
-    // Enable WAL mode for better concurrent write performance
-    $db->exec("PRAGMA journal_mode=WAL");
-    $db->exec("PRAGMA synchronous=NORMAL");
-    $db->exec("PRAGMA cache_size=-64000"); // 64MB cache
-    $db->exec("PRAGMA temp_store=MEMORY");
     
     $whois = new WhoisService();
     $rdap = new RdapEngine($concurrency);
@@ -317,7 +312,7 @@ try {
                 break;
             default:
                 log_msg("Unknown job type: {$job['type']}");
-                $db->prepare("UPDATE jobs SET status = 'failed', updated_at = datetime('now') WHERE id = ?")->execute([$job['id']]);
+                $db->prepare("UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = ?")->execute([$job['id']]);
         }
         
         $elapsed = round(microtime(true) - $t, 1);

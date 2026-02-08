@@ -39,25 +39,26 @@ require_once __DIR__ . '/../services/RdapEngine.php';
 
 $db = initDatabase();
 
-// Auto-migrate: ensure jobs table exists (for servers with old config.php)
+// Auto-migrate: ensure jobs table exists
 try {
-    $result = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'");
+    $result = $db->query("SHOW TABLES LIKE 'jobs'");
     if (!$result->fetch()) {
         $db->exec("
             CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                type TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                total INTEGER DEFAULT 0,
-                processed INTEGER DEFAULT 0,
-                errors INTEGER DEFAULT 0,
-                data TEXT,
-                result TEXT,
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                user_id INT NOT NULL,
+                type VARCHAR(50) NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                total INT DEFAULT 0,
+                processed INT DEFAULT 0,
+                errors INT DEFAULT 0,
+                data LONGTEXT,
+                result LONGTEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                INDEX idx_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         ");
     }
 } catch (Exception $e) {
@@ -246,7 +247,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
                 $where[] = "d.is_registered = 0";
                 break;
             case 'expiring':
-                $where[] = "d.is_registered = 1 AND d.expiry_date IS NOT NULL AND d.expiry_date <= date('now', '+30 days')";
+                $where[] = "d.is_registered = 1 AND d.expiry_date IS NOT NULL AND d.expiry_date <= DATE_ADD(NOW(), INTERVAL 30 DAY)";
                 break;
         }
         
@@ -300,7 +301,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
         $whoisData = $whois->lookup($domain);
         
         // Insert domain
-        $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
+        $stmt = $db->prepare("INSERT IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, NOW(), ?)");
         $stmt->execute([
             $domain,
             $whoisData['expiry_date'],
@@ -308,9 +309,9 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
             $user['id']
         ]);
         
-        if ($db->lastInsertId() == 0) {
+        if ($stmt->rowCount() == 0) {
             // Domain already exists, update it
-            $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE domain = ?");
+            $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE domain = ?");
             $stmt->execute([$whoisData['expiry_date'], $whoisData['is_registered'] ? 1 : 0, $domain]);
         }
         
@@ -346,7 +347,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
             
             $whoisData = $whois->lookup($domain);
             
-            $stmt = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
+            $stmt = $db->prepare("INSERT IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, NOW(), ?)");
             $stmt->execute([
                 $domain,
                 $whoisData['expiry_date'],
@@ -358,7 +359,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
                 'domain' => $domain,
                 'expiry_date' => $whoisData['expiry_date'],
                 'is_registered' => $whoisData['is_registered'],
-                'added' => $db->lastInsertId() > 0
+                'added' => $stmt->rowCount() > 0
             ];
             
             // Rate limiting - wait a bit between WHOIS queries
@@ -385,7 +386,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
         $wasRegistered = $domain['is_registered'];
         $isNowAvailable = !$whoisData['is_registered'];
         
-        $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+        $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE id = ?");
         $stmt->execute([$whoisData['expiry_date'], $whoisData['is_registered'] ? 1 : 0, $domainId]);
         
         // If domain became available, notify
@@ -416,7 +417,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
             COUNT(*) as total,
             SUM(CASE WHEN is_registered = 1 THEN 1 ELSE 0 END) as registered,
             SUM(CASE WHEN is_registered = 0 THEN 1 ELSE 0 END) as available,
-            SUM(CASE WHEN is_registered = 1 AND expiry_date IS NOT NULL AND expiry_date <= date('now', '+30 days') THEN 1 ELSE 0 END) as expiring
+            SUM(CASE WHEN is_registered = 1 AND expiry_date IS NOT NULL AND expiry_date <= DATE_ADD(NOW(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) as expiring
         FROM domains");
         $stats = $stmt->fetch(PDO::FETCH_ASSOC);
         
@@ -468,7 +469,7 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
         $ai->cacheDomainDetails((int)$action, $details);
         
         // Update domain info
-        $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+        $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE id = ?");
         $stmt->execute([$whoisData['expiry_date'], $whoisData['is_registered'] ? 1 : 0, $action]);
         
         // Reload domain
@@ -791,63 +792,39 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         jsonResponse(['job' => $job]);
     }
     
-    // Process a batch of a pending job — each call handles batch_size domains
-    // with parallel RDAP. Frontend fires many of these in parallel.
-    // Strategy: minimize DB lock time — do all RDAP first, write once at the end.
+    // Process a batch of a pending job — MySQL handles concurrency natively.
+    // No retry loops needed! Multiple workers can write simultaneously.
     if ($action === 'process' && $method === 'POST') {
         $jobId = $input['job_id'] ?? 0;
-        $batchSize = min(100, max(1, (int)($input['batch_size'] ?? 50)));
+        $batchSize = min(200, max(1, (int)($input['batch_size'] ?? 100)));
         
-        // === STEP 1: Claim batch with BEGIN IMMEDIATE (serializes writers) ===
-        $claimStart = null;
-        $claimEnd = null;
-        $jobData = null;
+        // === STEP 1: Atomic claim — single UPDATE with row-level lock ===
+        $db->beginTransaction();
+        $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND status IN ('pending', 'processing') AND processed < total FOR UPDATE");
+        $stmt->execute([$jobId]);
+        $job = $stmt->fetch(PDO::FETCH_ASSOC);
         
-        for ($attempt = 0; $attempt < 15; $attempt++) {
-            try {
-                $db->exec("BEGIN IMMEDIATE"); // grabs write lock immediately
-                $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ? AND status IN ('pending', 'processing') AND processed < total");
-                $stmt->execute([$jobId]);
-                $job = $stmt->fetch(PDO::FETCH_ASSOC);
-                
-                if (!$job) {
-                    $db->exec("COMMIT");
-                    // Check if completed
-                    $s2 = $db->prepare("SELECT * FROM jobs WHERE id = ?");
-                    $s2->execute([$jobId]);
-                    $j2 = $s2->fetch(PDO::FETCH_ASSOC);
-                    jsonResponse(['job' => $j2 ?: [], 'message' => 'completed']);
-                }
-                
-                $claimStart = (int)$job['processed'];
-                $claimEnd = min($claimStart + $batchSize, (int)$job['total']);
-                
-                $db->prepare("UPDATE jobs SET processed = ?, status = 'processing', updated_at = datetime('now') WHERE id = ?")
-                   ->execute([$claimEnd, $jobId]);
-                $db->exec("COMMIT"); // release lock ASAP
-                
-                $jobData = $job;
-                break;
-            } catch (Exception $e) {
-                try { $db->exec("ROLLBACK"); } catch (Exception $ignore) {}
-                if ($attempt < 14 && str_contains($e->getMessage(), 'locked')) {
-                    usleep(rand(30000, 100000) * ($attempt + 1)); // jittered backoff
-                } else {
-                    jsonResponse(['error' => 'DB claim failed: ' . $e->getMessage()], 500);
-                }
-            }
+        if (!$job) {
+            $db->commit();
+            $s2 = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+            $s2->execute([$jobId]);
+            $j2 = $s2->fetch(PDO::FETCH_ASSOC);
+            jsonResponse(['job' => $j2 ?: [], 'message' => 'completed']);
         }
         
-        if (!$jobData) {
-            jsonResponse(['error' => 'Could not claim batch after retries'], 500);
-        }
+        $claimStart = (int)$job['processed'];
+        $claimEnd = min($claimStart + $batchSize, (int)$job['total']);
         
-        // === STEP 2: RDAP lookups — NO DB, pure network, can take as long as needed ===
-        $rdap = new RdapEngine(30); // 30 concurrent RDAP per worker
-        $jobDataDecoded = json_decode($jobData['data'], true);
+        $db->prepare("UPDATE jobs SET processed = ?, status = 'processing', updated_at = NOW() WHERE id = ?")
+           ->execute([$claimEnd, $jobId]);
+        $db->commit(); // release row lock immediately
+        
+        // === STEP 2: RDAP lookups — pure network, no DB ===
+        $rdap = new RdapEngine(50); // 50 concurrent RDAP per worker (MySQL can handle it)
+        $jobDataDecoded = json_decode($job['data'], true);
         $batchErrors = 0;
         
-        if ($jobData['type'] === 'import') {
+        if ($job['type'] === 'import') {
             $domainList = $jobDataDecoded;
             $batch = array_slice($domainList, $claimStart, $claimEnd - $claimStart);
             
@@ -864,26 +841,21 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                 $cleanNames[] = $name;
             }
             
-            // Check which already exist (read-only — no lock needed)
+            // Filter existing (read — no lock contention in MySQL)
             $toCheck = $cleanNames;
             if (!empty($cleanNames)) {
-                try {
-                    $existing = [];
-                    $ph = implode(',', array_fill(0, count($cleanNames), '?'));
-                    $s = $db->prepare("SELECT domain FROM domains WHERE domain IN ($ph)");
-                    $s->execute($cleanNames);
-                    foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $d) $existing[$d] = true;
-                    $toCheck = array_values(array_filter($cleanNames, fn($n) => !isset($existing[$n])));
-                } catch (Exception $e) {
-                    // If even reads fail, just check all — duplicates will be INSERT OR IGNORE'd
-                }
+                $existing = [];
+                $ph = implode(',', array_fill(0, count($cleanNames), '?'));
+                $s = $db->prepare("SELECT domain FROM domains WHERE domain IN ($ph)");
+                $s->execute($cleanNames);
+                foreach ($s->fetchAll(PDO::FETCH_COLUMN) as $d) $existing[$d] = true;
+                $toCheck = array_values(array_filter($cleanNames, fn($n) => !isset($existing[$n])));
             }
             
             // Parallel RDAP (pure network, no DB)
             if (!empty($toCheck)) {
                 $rdapResults = $rdap->lookupBatch($toCheck);
                 
-                // Fallback for misses
                 foreach ($toCheck as $name) {
                     if (($rdapResults[$name] ?? null) === null) {
                         try {
@@ -895,32 +867,19 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                     }
                 }
                 
-                // === STEP 3: Single fast DB write with BEGIN IMMEDIATE ===
-                for ($attempt = 0; $attempt < 15; $attempt++) {
-                    try {
-                        $db->exec("BEGIN IMMEDIATE");
-                        $ins = $db->prepare("INSERT OR IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, datetime('now'), ?)");
-                        foreach ($toCheck as $name) {
-                            $data = $rdapResults[$name] ?? null;
-                            if ($data) {
-                                $ins->execute([$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0, $user['id']]);
-                            }
-                        }
-                        $db->exec("COMMIT");
-                        break;
-                    } catch (Exception $e) {
-                        try { $db->exec("ROLLBACK"); } catch (Exception $ignore) {}
-                        if ($attempt < 14 && str_contains($e->getMessage(), 'locked')) {
-                            usleep(rand(50000, 150000) * ($attempt + 1));
-                        } else {
-                            $batchErrors += count($toCheck);
-                            break;
-                        }
+                // === STEP 3: Batch INSERT — MySQL handles concurrent writes natively ===
+                $db->beginTransaction();
+                $ins = $db->prepare("INSERT IGNORE INTO domains (domain, expiry_date, is_registered, last_checked, added_by) VALUES (?, ?, ?, NOW(), ?)");
+                foreach ($toCheck as $name) {
+                    $data = $rdapResults[$name] ?? null;
+                    if ($data) {
+                        $ins->execute([$name, $data['expiry_date'] ?? null, ($data['is_registered'] ?? false) ? 1 : 0, $user['id']]);
                     }
                 }
+                $db->commit();
             }
             
-        } elseif ($jobData['type'] === 'whois_check') {
+        } elseif ($job['type'] === 'whois_check') {
             $domainIds = $jobDataDecoded['domain_ids'] ?? [];
             $batchIds = array_slice($domainIds, $claimStart, $claimEnd - $claimStart);
             
@@ -941,66 +900,34 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
                         }
                     }
                     
-                    for ($attempt = 0; $attempt < 15; $attempt++) {
-                        try {
-                            $db->exec("BEGIN IMMEDIATE");
-                            $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
-                            foreach ($rows as $name => $row) {
-                                $data = $rdapResults[$name] ?? null;
-                                if ($data) {
-                                    $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
-                                }
-                            }
-                            $db->exec("COMMIT");
-                            break;
-                        } catch (Exception $e) {
-                            try { $db->exec("ROLLBACK"); } catch (Exception $ignore) {}
-                            if ($attempt < 14 && str_contains($e->getMessage(), 'locked')) {
-                                usleep(rand(50000, 150000) * ($attempt + 1));
-                            } else {
-                                $batchErrors += count($rows);
-                                break;
-                            }
+                    $db->beginTransaction();
+                    $upd = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = NOW() WHERE id = ?");
+                    foreach ($rows as $name => $row) {
+                        $data = $rdapResults[$name] ?? null;
+                        if ($data) {
+                            $upd->execute([$data['expiry_date'] ?? $row['expiry_date'], ($data['is_registered'] ?? false) ? 1 : 0, $row['id']]);
                         }
                     }
+                    $db->commit();
                 }
             }
         }
         
-        // === STEP 4: Update error count + check completion ===
-        for ($attempt = 0; $attempt < 10; $attempt++) {
-            try {
-                $db->exec("BEGIN IMMEDIATE");
-                if ($batchErrors > 0) {
-                    $db->prepare("UPDATE jobs SET errors = errors + ?, updated_at = datetime('now') WHERE id = ?")->execute([$batchErrors, $jobId]);
-                }
-                $finalStmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
-                $finalStmt->execute([$jobId]);
-                $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
-                if ($job && (int)$job['processed'] >= (int)$job['total'] && $job['status'] !== 'completed') {
-                    $db->prepare("UPDATE jobs SET status = 'completed', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
-                    $finalStmt->execute([$jobId]);
-                    $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
-                }
-                $db->exec("COMMIT");
-                break;
-            } catch (Exception $e) {
-                try { $db->exec("ROLLBACK"); } catch (Exception $ignore) {}
-                if ($attempt < 9 && str_contains($e->getMessage(), 'locked')) {
-                    usleep(rand(30000, 80000) * ($attempt + 1));
-                } else {
-                    // Last resort: just read without transaction
-                    try {
-                        $finalStmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
-                        $finalStmt->execute([$jobId]);
-                        $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
-                    } catch (Exception $ignore) {}
-                    break;
-                }
-            }
+        // === STEP 4: Update errors + check completion ===
+        if ($batchErrors > 0) {
+            $db->prepare("UPDATE jobs SET errors = errors + ? WHERE id = ?")->execute([$batchErrors, $jobId]);
         }
         
-        jsonResponse(['job' => $job ?? ['id' => $jobId, 'status' => 'processing']]);
+        $finalStmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
+        $finalStmt->execute([$jobId]);
+        $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
+        if ($job && (int)$job['processed'] >= (int)$job['total'] && $job['status'] !== 'completed') {
+            $db->prepare("UPDATE jobs SET status = 'completed' WHERE id = ?")->execute([$jobId]);
+            $finalStmt->execute([$jobId]);
+            $job = $finalStmt->fetch(PDO::FETCH_ASSOC);
+        }
+        
+        jsonResponse(['job' => $job]);
     }
     
     // Resume a stuck job — resets 'processing' back to 'pending' so it can be re-triggered
@@ -1019,7 +946,7 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         }
         
         // Reset to pending so the frontend can kick it off again
-        $db->prepare("UPDATE jobs SET status = 'pending', updated_at = datetime('now') WHERE id = ?")->execute([$jobId]);
+        $db->prepare("UPDATE jobs SET status = 'pending', updated_at = NOW() WHERE id = ?")->execute([$jobId]);
         
         $stmt = $db->prepare("SELECT * FROM jobs WHERE id = ?");
         $stmt->execute([$jobId]);

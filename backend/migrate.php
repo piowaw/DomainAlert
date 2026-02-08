@@ -1,47 +1,35 @@
 <?php
 /**
- * Database Migration Script
- * Run this script to update database schema with new tables
- * Usage: php migrate.php
+ * Database Migration Script (MySQL)
+ * Run this script to ensure all tables exist.
+ * initDatabase() in config.php handles all CREATE TABLE IF NOT EXISTS.
+ * Usage: php migrate.php  OR  visit /migrate.php in browser
  */
 
 require_once __DIR__ . '/config.php';
 
-echo "=== DomainAlert Database Migration ===\n\n";
+$isCli = php_sapi_name() === 'cli';
+$nl = $isCli ? "\n" : "<br>";
+
+echo "=== DomainAlert Database Migration ===$nl$nl";
 
 try {
     $db = initDatabase();
     
-    // Check if jobs table exists
-    $result = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'");
-    $jobsExists = $result->fetch();
-    
-    if (!$jobsExists) {
-        echo "Creating jobs table...\n";
-        $db->exec("
-            CREATE TABLE IF NOT EXISTS jobs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                type TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                total INTEGER DEFAULT 0,
-                processed INTEGER DEFAULT 0,
-                errors INTEGER DEFAULT 0,
-                data TEXT,
-                result TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        ");
-        echo "✓ Jobs table created successfully\n";
-    } else {
-        echo "✓ Jobs table already exists\n";
+    // Verify tables exist
+    $tables = ['users', 'domains', 'notifications', 'invitations', 'jobs'];
+    foreach ($tables as $table) {
+        $result = $db->query("SHOW TABLES LIKE '$table'");
+        if ($result->fetch()) {
+            echo "✓ Table '$table' exists$nl";
+        } else {
+            echo "✗ Table '$table' MISSING — this should not happen, check config.php$nl";
+        }
     }
     
-    echo "\n=== Migration completed successfully ===\n";
+    echo "{$nl}=== Migration completed successfully ===$nl";
     
 } catch (Exception $e) {
-    echo "ERROR: " . $e->getMessage() . "\n";
+    echo "ERROR: " . $e->getMessage() . $nl;
     exit(1);
 }
