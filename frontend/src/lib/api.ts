@@ -589,3 +589,10 @@ export async function getDockerStatus() {
 export async function testOllama() {
   return apiCall<{ success: boolean; response: string | null; error: string | null; status: AiStatus }>('ai/test', { method: 'POST', timeoutMs: 180000 });
 }
+
+export async function setActiveModel(model: string) {
+  return apiCall<{ success: boolean; message: string; model: string }>('ai/set-model', {
+    method: 'POST',
+    body: { model },
+  });
+}

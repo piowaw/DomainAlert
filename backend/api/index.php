@@ -1339,6 +1339,48 @@ function handleAi(string $action, string $subAction, PDO $db, AiService $ai, arr
         jsonResponse($dockerInfo);
     }
     
+    // Switch active AI model
+    if ($action === 'set-model' && $method === 'POST') {
+        requireAdmin();
+        $newModel = $input['model'] ?? '';
+        if (empty($newModel)) {
+            jsonResponse(['error' => 'Model name is required'], 400);
+        }
+        
+        // Find config.php
+        $configPath = realpath(__DIR__ . '/../config.php');
+        if (!$configPath) {
+            $configPath = realpath(__DIR__ . '/../../config.php');
+        }
+        if (!$configPath) {
+            jsonResponse(['error' => 'Nie znaleziono config.php'], 500);
+        }
+        
+        $content = file_get_contents($configPath);
+        if ($content === false) {
+            jsonResponse(['error' => 'Nie można odczytać config.php'], 500);
+        }
+        
+        // Replace OLLAMA_MODEL line
+        $newContent = preg_replace(
+            "/define\('OLLAMA_MODEL',\s*'[^']*'\);/",
+            "define('OLLAMA_MODEL', '" . addslashes($newModel) . "');",
+            $content,
+            1,
+            $count
+        );
+        
+        if ($count === 0) {
+            jsonResponse(['error' => 'Nie znaleziono OLLAMA_MODEL w config.php'], 500);
+        }
+        
+        if (file_put_contents($configPath, $newContent) === false) {
+            jsonResponse(['error' => 'Nie można zapisać config.php — sprawdź uprawnienia'], 500);
+        }
+        
+        jsonResponse(['success' => true, 'message' => "Model zmieniony na: {$newModel}", 'model' => $newModel]);
+    }
+    
     jsonResponse(['error' => 'Not found'], 404);
 }
 

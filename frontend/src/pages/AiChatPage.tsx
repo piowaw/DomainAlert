@@ -16,6 +16,7 @@ import {
   removeOllama,
   getDockerStatus,
   testOllama,
+  setActiveModel,
   type AiConversation,
   type AiMessage,
   type AiStatus,
@@ -634,8 +635,25 @@ export default function AiChatPage() {
                         <Badge variant={model === aiStatus.model ? 'default' : 'outline'}>
                           {model}
                         </Badge>
-                        {model === aiStatus.model && (
+                        {model === aiStatus.model ? (
                           <span className="text-xs text-muted-foreground">(aktywny)</span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 text-xs px-2"
+                            onClick={async () => {
+                              try {
+                                await setActiveModel(model);
+                                toast({ title: `Model zmieniony na ${model}` });
+                                loadStatus();
+                              } catch (err: unknown) {
+                                toast({ title: 'Błąd', description: err instanceof Error ? err.message : 'Nie udało się zmienić modelu', variant: 'destructive' });
+                              }
+                            }}
+                          >
+                            Ustaw jako aktywny
+                          </Button>
                         )}
                       </div>
                     ))}
