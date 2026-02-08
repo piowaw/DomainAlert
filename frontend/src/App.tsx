@@ -8,6 +8,8 @@ import AdminPage from '@/pages/AdminPage';
 import GeneratorPage from '@/pages/GeneratorPage';
 import SettingsPage from '@/pages/SettingsPage';
 import TasksPage from '@/pages/TasksPage';
+import DomainDetailPage from '@/pages/DomainDetailPage';
+import AiChatPage from '@/pages/AiChatPage';
 import { Toaster } from '@/components/ui/toaster';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -102,6 +104,22 @@ function AppRoutes() {
         element={
           <ProtectedRoute>
             <TasksPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/domain/:id"
+        element={
+          <ProtectedRoute>
+            <DomainDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/ai"
+        element={
+          <ProtectedRoute>
+            <AiChatPage />
           </ProtectedRoute>
         }
       />

@@ -629,6 +629,8 @@ interface DomainTableProps {
 }
 
 function DomainTable({ domains, onCheck, onDelete, checkingId, formatDate, getExpiryBadge }: DomainTableProps) {
+  const navigate = useNavigate();
+  
   if (domains.length === 0) {
     return (
       <div className="text-center py-8 text-muted-foreground">
@@ -651,14 +653,14 @@ function DomainTable({ domains, onCheck, onDelete, checkingId, formatDate, getEx
       </TableHeader>
       <TableBody>
         {domains.map((domain) => (
-          <TableRow key={domain.id}>
-            <TableCell className="font-medium">{domain.domain}</TableCell>
+          <TableRow key={domain.id} className="cursor-pointer hover:bg-muted/50" onClick={() => navigate(`/domain/${domain.id}`)}>
+            <TableCell className="font-medium text-primary hover:underline">{domain.domain}</TableCell>
             <TableCell>{getExpiryBadge(domain)}</TableCell>
             <TableCell>{formatDate(domain.expiry_date)}</TableCell>
             <TableCell>{formatDate(domain.last_checked)}</TableCell>
             <TableCell className="text-muted-foreground">{domain.added_by_email || '-'}</TableCell>
             <TableCell className="text-right">
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
                 <Button
                   variant="ghost"
                   size="sm"

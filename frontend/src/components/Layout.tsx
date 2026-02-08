@@ -10,7 +10,8 @@ import {
   Shield, 
   LogOut,
   Menu,
-  X
+  X,
+  Brain,
 } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
@@ -23,6 +24,7 @@ const navItems = [
   { path: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { path: '/generator', icon: Wand2, label: 'Generator' },
   { path: '/tasks', icon: ListTodo, label: 'Zadania' },
+  { path: '/ai', icon: Brain, label: 'Asystent AI' },
   { path: '/settings', icon: Settings, label: 'Ustawienia' },
 ];
 

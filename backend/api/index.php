@@ -3,6 +3,8 @@
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../services/WhoisService.php';
 require_once __DIR__ . '/../services/NotificationService.php';
+require_once __DIR__ . '/../services/ScraperService.php';
+require_once __DIR__ . '/../services/AiService.php';
 
 $db = initDatabase();
 
@@ -33,6 +35,8 @@ try {
 
 $whois = new WhoisService();
 $notifications = new NotificationService($db);
+$scraper = new ScraperService();
+$ai = new AiService($db);
 
 // Router
 $requestUri = $_SERVER['REQUEST_URI'];
@@ -54,7 +58,7 @@ try {
             handleAuth($segments[1] ?? '', $db, $input);
             break;
         case 'domains':
-            handleDomains($segments[1] ?? '', $db, $whois, $notifications, $input, $method);
+            handleDomains($segments[1] ?? '', $db, $whois, $notifications, $scraper, $ai, $input, $method);
             break;
         case 'users':
             handleUsers($segments[1] ?? '', $db, $input, $method);
@@ -67,6 +71,9 @@ try {
             break;
         case 'jobs':
             handleJobs($segments[1] ?? '', $db, $whois, $input, $method);
+            break;
+        case 'ai':
+            handleAi($segments[1] ?? '', $segments[2] ?? '', $db, $ai, $input, $method);
             break;
         case 'profile':
             handleProfile($db, $input, $method);
@@ -172,7 +179,7 @@ function handleAuth(string $action, PDO $db, array $input): void {
     }
 }
 
-function handleDomains(string $action, PDO $db, WhoisService $whois, NotificationService $notifications, array $input, string $method): void {
+function handleDomains(string $action, PDO $db, WhoisService $whois, NotificationService $notifications, ScraperService $scraper, AiService $ai, array $input, string $method): void {
     $user = requireAuth();
     
     if ($action === '' && $method === 'GET') {
@@ -381,6 +388,72 @@ function handleDomains(string $action, PDO $db, WhoisService $whois, Notificatio
             'registered' => (int)$stats['registered'],
             'available' => (int)$stats['available'],
             'expiring' => (int)$stats['expiring']
+        ]);
+    }
+    
+    // Get full domain details (WHOIS + scrape + Google + DNS + AI)
+    if (is_numeric($action) && $method === 'GET') {
+        $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
+        $stmt->execute([$action]);
+        $domain = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$domain) {
+            jsonResponse(['error' => 'Domain not found'], 404);
+        }
+        
+        $forceRefresh = isset($_GET['refresh']);
+        $cached = $ai->getCachedDomainDetails((int)$action);
+        
+        if ($cached && !$forceRefresh) {
+            jsonResponse([
+                'domain' => $domain,
+                'details' => $cached,
+                'cached' => true,
+            ]);
+        }
+        
+        // Gather all data
+        $whoisData = $whois->lookup($domain['domain']);
+        $scrapeData = $scraper->scrapeWebsite($domain['domain']);
+        $googleData = $scraper->searchGoogle($domain['domain']);
+        $dnsRecords = $scraper->getDnsRecords($domain['domain']);
+        
+        // AI Analysis (if available)
+        $aiAnalysis = $ai->analyzeDomain($domain['domain'], $whoisData, $scrapeData, $googleData);
+        
+        // Cache the results
+        $details = [
+            'whois_raw' => $whoisData['raw'] ?? '',
+            'whois_parsed' => $whoisData,
+            'scrape_data' => $scrapeData,
+            'google_data' => $googleData,
+            'dns_records' => $dnsRecords,
+            'ai_analysis' => $aiAnalysis,
+        ];
+        
+        $ai->cacheDomainDetails((int)$action, $details);
+        
+        // Update domain info
+        $stmt = $db->prepare("UPDATE domains SET expiry_date = ?, is_registered = ?, last_checked = datetime('now') WHERE id = ?");
+        $stmt->execute([$whoisData['expiry_date'], $whoisData['is_registered'] ? 1 : 0, $action]);
+        
+        // Reload domain
+        $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
+        $stmt->execute([$action]);
+        $domain = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        jsonResponse([
+            'domain' => $domain,
+            'details' => [
+                'whois_raw' => $whoisData['raw'] ?? '',
+                'whois_parsed' => $whoisData,
+                'scrape_data' => $scrapeData,
+                'google_data' => $googleData,
+                'dns_records' => $dnsRecords,
+                'ai_analysis' => $aiAnalysis,
+                'scraped_at' => date('Y-m-d H:i:s'),
+            ],
+            'cached' => false,
         ]);
     }
     
@@ -791,6 +864,101 @@ function handleJobs(string $action, PDO $db, WhoisService $whois, array $input, 
         $stmt = $db->prepare("DELETE FROM jobs WHERE id = ?");
         $stmt->execute([$action]);
         jsonResponse(['success' => true]);
+    }
+    
+    jsonResponse(['error' => 'Not found'], 404);
+}
+
+function handleAi(string $action, string $subAction, PDO $db, AiService $ai, array $input, string $method): void {
+    $user = requireAuth();
+    
+    // AI Status
+    if ($action === 'status' && $method === 'GET') {
+        jsonResponse($ai->getStatus());
+    }
+    
+    // Conversations list
+    if ($action === 'conversations' && $subAction === '' && $method === 'GET') {
+        $conversations = $ai->getConversations($user['id']);
+        jsonResponse(['conversations' => $conversations]);
+    }
+    
+    // Create conversation
+    if ($action === 'conversations' && $subAction === '' && $method === 'POST') {
+        $title = $input['title'] ?? 'Nowa rozmowa';
+        $domain = $input['domain'] ?? null;
+        $id = $ai->createConversation($user['id'], $title, $domain);
+        
+        $conversation = $ai->getConversation($id, $user['id']);
+        jsonResponse(['conversation' => $conversation], 201);
+    }
+    
+    // Get conversation with messages
+    if ($action === 'conversations' && is_numeric($subAction) && $method === 'GET') {
+        $conversation = $ai->getConversation((int)$subAction, $user['id']);
+        if (!$conversation) {
+            jsonResponse(['error' => 'Conversation not found'], 404);
+        }
+        jsonResponse(['conversation' => $conversation]);
+    }
+    
+    // Send message to conversation
+    if ($action === 'conversations' && is_numeric($subAction) && $method === 'POST') {
+        $message = $input['message'] ?? '';
+        if (empty($message)) {
+            jsonResponse(['error' => 'Message is required'], 400);
+        }
+        
+        $response = $ai->continueConversation((int)$subAction, $message, $user['id']);
+        if (!$response) {
+            jsonResponse(['error' => 'Conversation not found'], 404);
+        }
+        jsonResponse(['message' => $response]);
+    }
+    
+    // Delete conversation
+    if ($action === 'conversations' && is_numeric($subAction) && $method === 'DELETE') {
+        $ai->deleteConversation((int)$subAction, $user['id']);
+        jsonResponse(['success' => true]);
+    }
+    
+    // Knowledge base - list
+    if ($action === 'knowledge' && $subAction === '' && $method === 'GET') {
+        $domain = $_GET['domain'] ?? null;
+        $knowledge = $ai->getKnowledgeBase($domain);
+        jsonResponse(['knowledge' => $knowledge]);
+    }
+    
+    // Knowledge base - add
+    if ($action === 'knowledge' && $subAction === '' && $method === 'POST') {
+        $content = $input['content'] ?? '';
+        $type = $input['type'] ?? 'note';
+        $domain = $input['domain'] ?? null;
+        $source = $input['source'] ?? null;
+        
+        if (empty($content)) {
+            jsonResponse(['error' => 'Content is required'], 400);
+        }
+        
+        $id = $ai->addKnowledge($content, $type, $domain, $source, $user['id']);
+        jsonResponse(['knowledge' => ['id' => $id, 'content' => $content, 'type' => $type, 'domain' => $domain]], 201);
+    }
+    
+    // Knowledge base - delete
+    if ($action === 'knowledge' && is_numeric($subAction) && $method === 'DELETE') {
+        $ai->deleteKnowledge((int)$subAction);
+        jsonResponse(['success' => true]);
+    }
+    
+    // Quick chat (no conversation)
+    if ($action === 'chat' && $method === 'POST') {
+        $message = $input['message'] ?? '';
+        if (empty($message)) {
+            jsonResponse(['error' => 'Message is required'], 400);
+        }
+        
+        $response = $ai->chat($message);
+        jsonResponse(['response' => $response ?? 'Ollama nie jest dostępna. Sprawdź czy serwer jest uruchomiony.']);
     }
     
     jsonResponse(['error' => 'Not found'], 404);

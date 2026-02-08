@@ -19,6 +19,10 @@ define('NTFY_TOPIC', 'domainalert-demo'); // ZMIEŃ NA SWÓJ UNIKALNY TEMAT
 define('JWT_SECRET', 'ZMIEN-TO-NA-BARDZO-DLUGI-LOSOWY-CIAG-ZNAKOW');
 define('JWT_EXPIRY', 86400 * 7); // 7 days
 
+// Ollama AI configuration
+define('OLLAMA_URL', 'http://localhost:11434');
+define('OLLAMA_MODEL', 'deepseek-r1:1.5b'); // Zmień na inny model jeśli chcesz, np. llama3, mistral, phi3
+
 // CORS headers
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');

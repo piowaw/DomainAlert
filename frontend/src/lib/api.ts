@@ -340,3 +340,146 @@ export async function updateUserRole(id: number, isAdmin: boolean) {
     body: { is_admin: isAdmin },
   });
 }
+
+// Domain Details
+export interface DomainDetails {
+  whois_raw: string;
+  whois_parsed: {
+    domain: string;
+    is_registered: boolean;
+    expiry_date: string | null;
+    registrar: string | null;
+    raw: string;
+    error: string | null;
+  };
+  scrape_data: {
+    title: string | null;
+    description: string | null;
+    keywords: string | null;
+    h1: string[];
+    links_count: number;
+    images_count: number;
+    text_content: string;
+    technologies: string[];
+    emails: string[];
+    phones: string[];
+    social_links: { platform: string; url: string }[];
+    for_sale_indicators: string[];
+    language: string | null;
+    server: string | null;
+    status_code: number | null;
+    redirect_url: string | null;
+    ssl_valid: boolean;
+    ssl_expiry: string | null;
+    error: string | null;
+  };
+  google_data: {
+    results: { title: string; url: string; snippet: string }[];
+    total_results: number;
+    error: string | null;
+  };
+  dns_records: { type: string; host: string; value: string; ttl: number; priority: number | null }[];
+  ai_analysis: string | null;
+  scraped_at: string;
+}
+
+export async function getDomainDetails(id: number, refresh = false) {
+  const qs = refresh ? '?refresh=1' : '';
+  return apiCall<{ domain: Domain; details: DomainDetails; cached: boolean }>(`domains/${id}${qs}`);
+}
+
+// AI
+export interface AiStatus {
+  ollama_running: boolean;
+  model: string;
+  ollama_url: string;
+  models_available: string[];
+  error: string | null;
+}
+
+export async function getAiStatus() {
+  return apiCall<AiStatus>('ai/status');
+}
+
+export interface AiConversation {
+  id: number;
+  user_id: number;
+  title: string;
+  domain: string | null;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+  messages?: AiMessage[];
+}
+
+export interface AiMessage {
+  id: number;
+  conversation_id: number;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  created_at: string;
+}
+
+export async function getConversations() {
+  return apiCall<{ conversations: AiConversation[] }>('ai/conversations');
+}
+
+export async function createConversation(title?: string, domain?: string) {
+  return apiCall<{ conversation: AiConversation }>('ai/conversations', {
+    method: 'POST',
+    body: { title, domain },
+  });
+}
+
+export async function getConversation(id: number) {
+  return apiCall<{ conversation: AiConversation }>(`ai/conversations/${id}`);
+}
+
+export async function sendMessage(conversationId: number, message: string) {
+  return apiCall<{ message: AiMessage }>(`ai/conversations/${conversationId}`, {
+    method: 'POST',
+    body: { message },
+  });
+}
+
+export async function deleteConversation(id: number) {
+  return apiCall<{ success: boolean }>(`ai/conversations/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+// Knowledge Base
+export interface KnowledgeEntry {
+  id: number;
+  domain: string | null;
+  type: string;
+  content: string;
+  source: string | null;
+  added_by: number | null;
+  created_at: string;
+}
+
+export async function getKnowledgeBase(domain?: string) {
+  const qs = domain ? `?domain=${encodeURIComponent(domain)}` : '';
+  return apiCall<{ knowledge: KnowledgeEntry[] }>(`ai/knowledge${qs}`);
+}
+
+export async function addKnowledge(content: string, type: string, domain?: string, source?: string) {
+  return apiCall<{ knowledge: KnowledgeEntry }>('ai/knowledge', {
+    method: 'POST',
+    body: { content, type, domain, source },
+  });
+}
+
+export async function deleteKnowledge(id: number) {
+  return apiCall<{ success: boolean }>(`ai/knowledge/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function quickAiChat(message: string) {
+  return apiCall<{ response: string }>('ai/chat', {
+    method: 'POST',
+    body: { message },
+  });
+}
