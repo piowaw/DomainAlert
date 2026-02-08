@@ -41,8 +41,10 @@ export default function TasksPage() {
   
   useEffect(() => {
     loadJobs();
-    
-    // Auto-refresh every 5 seconds if there are running jobs
+  }, []);
+  
+  // Auto-refresh every 5 seconds if there are running jobs
+  useEffect(() => {
     const interval = setInterval(() => {
       if (jobs.some(j => j.status === 'pending' || j.status === 'running')) {
         loadJobs();
@@ -50,7 +52,7 @@ export default function TasksPage() {
     }, 5000);
     
     return () => clearInterval(interval);
-  }, [loadJobs, jobs]);
+  }, [jobs.length]);
   
   async function handleProcess(job: Job) {
     if (processingJobs.has(job.id)) return;

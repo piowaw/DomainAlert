@@ -1,6 +1,4 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useAuth } from '@/hooks/useAuth';
 import { importDomainsInBatches } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, Wand2, Plus, Copy, Loader2, Check, Shuffle, Filter, Download } from 'lucide-react';
+import { Wand2, Plus, Copy, Loader2, Check, Shuffle, Filter, Download } from 'lucide-react';
 
 // TLD options
 const TLDS = [
@@ -51,7 +49,6 @@ const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
 const NUMBERS = '0123456789';
 
 export default function GeneratorPage() {
-  const { user } = useAuth();
   
   // Generator settings
   const [activeTab, setActiveTab] = useState('length');
@@ -405,41 +402,39 @@ export default function GeneratorPage() {
   };
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      {/* Header */}
-      <header className="bg-background border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link to="/">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                Powrót
-              </Button>
-            </Link>
-            <div className="flex items-center gap-2">
-              <div className="bg-primary rounded-lg p-2">
-                <Wand2 className="h-5 w-5 text-primary-foreground" />
-              </div>
-              <h1 className="text-xl font-bold">Generator domen</h1>
-            </div>
-          </div>
-          <span className="text-sm text-muted-foreground">{user?.email}</span>
-        </div>
-      </header>
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div>
+        <h1 className="text-2xl font-bold">Generator domen</h1>
+        <p className="text-muted-foreground">Generuj i sprawdzaj dostępność domen</p>
+      </div>
 
-      <main className="container mx-auto px-4 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Generator options */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* TLD Selection */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Rozszerzenia (TLD)</CardTitle>
-                <CardDescription>Wybierz rozszerzenia dla generowanych domen</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-wrap gap-2">
-                  {TLDS.filter(t => t.popular).map(tld => (
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Generator options */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* TLD Selection */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Rozszerzenia (TLD)</CardTitle>
+              <CardDescription>Wybierz rozszerzenia dla generowanych domen</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-2">
+                {TLDS.filter(t => t.popular).map(tld => (
+                  <Badge 
+                    key={tld.value}
+                    variant={selectedTlds.includes(tld.value) ? 'default' : 'outline'}
+                    className="cursor-pointer"
+                    onClick={() => toggleTld(tld.value)}
+                  >
+                    {tld.label}
+                  </Badge>
+                ))}
+              </div>
+              <details className="mt-4">
+                <summary className="text-sm text-muted-foreground cursor-pointer">Więcej rozszerzeń...</summary>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {TLDS.filter(t => !t.popular).map(tld => (
                     <Badge 
                       key={tld.value}
                       variant={selectedTlds.includes(tld.value) ? 'default' : 'outline'}
@@ -450,34 +445,20 @@ export default function GeneratorPage() {
                     </Badge>
                   ))}
                 </div>
-                <details className="mt-4">
-                  <summary className="text-sm text-muted-foreground cursor-pointer">Więcej rozszerzeń...</summary>
-                  <div className="flex flex-wrap gap-2 mt-2">
-                    {TLDS.filter(t => !t.popular).map(tld => (
-                      <Badge 
-                        key={tld.value}
-                        variant={selectedTlds.includes(tld.value) ? 'default' : 'outline'}
-                        className="cursor-pointer"
-                        onClick={() => toggleTld(tld.value)}
-                      >
-                        {tld.label}
-                      </Badge>
-                    ))}
-                  </div>
-                </details>
-              </CardContent>
-            </Card>
+              </details>
+            </CardContent>
+          </Card>
 
-            {/* Generator Types */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Typ generatora</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Tabs value={activeTab} onValueChange={setActiveTab}>
-                  <TabsList className="flex flex-wrap h-auto gap-1">
-                    <TabsTrigger value="length">Długość</TabsTrigger>
-                    <TabsTrigger value="pattern">Wzorzec</TabsTrigger>
+          {/* Generator Types */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Typ generatora</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Tabs value={activeTab} onValueChange={setActiveTab}>
+                <TabsList className="flex flex-wrap h-auto gap-1">
+                  <TabsTrigger value="length">Długość</TabsTrigger>
+                  <TabsTrigger value="pattern">Wzorzec</TabsTrigger>
                     <TabsTrigger value="keyword">Słowo kluczowe</TabsTrigger>
                     <TabsTrigger value="combine">Kombinacje</TabsTrigger>
                     <TabsTrigger value="pronounceable">Wymawiane</TabsTrigger>
@@ -930,7 +911,6 @@ export default function GeneratorPage() {
             )}
           </div>
         </div>
-      </main>
-    </div>
+      </div>
   );
 }

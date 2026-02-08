@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { getUsers, deleteUser, createUser, getInvitations, createInvitation, deleteInvitation, updateUserRole, type User, type Invitation } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
-import { ArrowLeft, Plus, Trash2, Copy, Check, Loader2 } from 'lucide-react';
+import { Plus, Trash2, Copy, Check, Loader2 } from 'lucide-react';
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -134,29 +134,20 @@ export default function AdminPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="flex items-center justify-center py-12">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      {/* Header */}
-      <header className="bg-background border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center gap-4">
-          <Link to="/">
-            <Button variant="ghost" size="sm">
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Powrót
-            </Button>
-          </Link>
-          <h1 className="text-xl font-bold">Panel Administratora</h1>
-        </div>
-      </header>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold">Panel Administratora</h1>
+        <p className="text-muted-foreground">Zarządzaj użytkownikami i zaproszeniami</p>
+      </div>
 
-      {/* Main content */}
-      <main className="container mx-auto px-4 py-8 space-y-8">
+      <div className="space-y-8">
         {/* Invitations */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
@@ -456,7 +447,7 @@ export default function AdminPage() {
             </Table>
           </CardContent>
         </Card>
-      </main>
+      </div>
     </div>
   );
 }

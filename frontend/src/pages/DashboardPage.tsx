@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useAuth } from '@/hooks/useAuth';
 import { getDomainsFiltered, addDomain, importDomainsInBatches, checkDomain, deleteDomain, getNotificationInfo, testNtfy, testEmail, type Domain, type DomainFilters } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,11 +9,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Globe, Plus, Upload, RefreshCw, Trash2, Bell, LogOut, Settings, ExternalLink, Loader2, Wand2, Search, ChevronLeft, ChevronRight, ListTodo } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Plus, Upload, RefreshCw, Trash2, Bell, ExternalLink, Loader2, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
 export default function DashboardPage() {
-  const { user, logout } = useAuth();
   const [domains, setDomains] = useState<Domain[]>([]);
   const [loading, setLoading] = useState(true);
   const [newDomain, setNewDomain] = useState('');
@@ -224,191 +221,154 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      {/* Header */}
-      <header className="bg-background border-b">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="bg-primary rounded-lg p-2">
-              <Globe className="h-6 w-6 text-primary-foreground" />
-            </div>
-            <h1 className="text-xl font-bold">DomainAlert</h1>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link to="/generator">
-              <Button variant="outline" size="sm">
-                <Wand2 className="h-4 w-4 mr-2" />
-                Generator
-              </Button>
-            </Link>
-            <Link to="/tasks">
-              <Button variant="outline" size="sm">
-                <ListTodo className="h-4 w-4 mr-2" />
-                Zadania
-              </Button>
-            </Link>
-            <Dialog open={notifyDialogOpen} onOpenChange={setNotifyDialogOpen}>
-              <DialogTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <Bell className="h-4 w-4 mr-2" />
-                  Powiadomienia
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Powiadomienia Push</DialogTitle>
-                  <DialogDescription>
-                    Zasubskrybuj powiadomienia przez ntfy
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    Aby otrzymywać powiadomienia o dostępnych domenach, zainstaluj aplikację ntfy i zasubskrybuj poniższy temat:
-                  </p>
-                  {notifyInfo && (
-                    <div className="space-y-2">
-                      <Label>Temat ntfy</Label>
-                      <div className="flex gap-2">
-                        <Input value={notifyInfo.topic} readOnly />
-                        <Button
-                          variant="outline"
-                          onClick={() => navigator.clipboard.writeText(notifyInfo.topic)}
-                        >
-                          Kopiuj
-                        </Button>
-                      </div>
-                    </div>
-                  )}
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Dashboard</h1>
+          <p className="text-muted-foreground">Monitoruj swoje domeny</p>
+        </div>
+        <Dialog open={notifyDialogOpen} onOpenChange={setNotifyDialogOpen}>
+          <DialogTrigger asChild>
+            <Button variant="outline">
+              <Bell className="h-4 w-4 mr-2" />
+              Powiadomienia
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Powiadomienia Push</DialogTitle>
+              <DialogDescription>
+                Zasubskrybuj powiadomienia przez ntfy
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Aby otrzymywać powiadomienia o dostępnych domenach, zainstaluj aplikację ntfy i zasubskrybuj poniższy temat:
+              </p>
+              {notifyInfo && (
+                <div className="space-y-2">
+                  <Label>Temat ntfy</Label>
                   <div className="flex gap-2">
-                    <a href="https://ntfy.sh" target="_blank" rel="noopener noreferrer">
-                      <Button variant="outline" size="sm">
-                        <ExternalLink className="h-4 w-4 mr-2" />
-                        ntfy.sh
-                      </Button>
-                    </a>
-                    {notifyInfo && (
-                      <a href={notifyInfo.subscription_url} target="_blank" rel="noopener noreferrer">
-                        <Button variant="outline" size="sm">
-                          <ExternalLink className="h-4 w-4 mr-2" />
-                          Otwórz temat
-                        </Button>
-                      </a>
-                    )}
-                  </div>
-                  <div className="border-t pt-4 mt-4">
-                    <Label className="mb-2 block">Testuj powiadomienia</Label>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={testingNtfy}
-                        onClick={async () => {
-                          setTestingNtfy(true);
-                          try {
-                            const result = await testNtfy();
-                            if (result.success) {
-                              alert('Powiadomienie ntfy wysłane!');
-                            } else {
-                              alert('Błąd: ' + (result.error || 'Nieznany błąd'));
-                            }
-                          } catch (err) {
-                            alert(err instanceof Error ? err.message : 'Błąd');
-                          } finally {
-                            setTestingNtfy(false);
-                          }
-                        }}
-                      >
-                        {testingNtfy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Bell className="h-4 w-4 mr-2" />}
-                        Test ntfy
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={testingEmail}
-                        onClick={async () => {
-                          setTestingEmail(true);
-                          try {
-                            const result = await testEmail();
-                            if (result.success) {
-                              alert('Email testowy wysłany!');
-                            } else {
-                              alert('Błąd: ' + (result.error || 'Nieznany błąd'));
-                            }
-                          } catch (err) {
-                            alert(err instanceof Error ? err.message : 'Błąd');
-                          } finally {
-                            setTestingEmail(false);
-                          }
-                        }}
-                      >
-                        {testingEmail ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Bell className="h-4 w-4 mr-2" />}
-                        Test Email
-                      </Button>
-                    </div>
+                    <Input value={notifyInfo.topic} readOnly />
+                    <Button
+                      variant="outline"
+                      onClick={() => navigator.clipboard.writeText(notifyInfo.topic)}
+                    >
+                      Kopiuj
+                    </Button>
                   </div>
                 </div>
-              </DialogContent>
-            </Dialog>
-            {user?.is_admin && (
-              <Link to="/admin">
-                <Button variant="outline" size="sm">
-                  <Settings className="h-4 w-4 mr-2" />
-                  Admin
-                </Button>
-              </Link>
-            )}
-            <Link to="/settings">
-              <Button variant="ghost" size="sm">
-                <Settings className="h-4 w-4" />
-              </Button>
-            </Link>
-            <span className="text-sm text-muted-foreground">{user?.email}</span>
-            <Button variant="ghost" size="sm" onClick={logout}>
-              <LogOut className="h-4 w-4" />
+              )}
+              <div className="flex gap-2">
+                <a href="https://ntfy.sh" target="_blank" rel="noopener noreferrer">
+                  <Button variant="outline" size="sm">
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    ntfy.sh
+                  </Button>
+                </a>
+                {notifyInfo && (
+                  <a href={notifyInfo.subscription_url} target="_blank" rel="noopener noreferrer">
+                    <Button variant="outline" size="sm">
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      Otwórz temat
+                    </Button>
+                  </a>
+                )}
+              </div>
+              <div className="border-t pt-4 mt-4">
+                <Label className="mb-2 block">Testuj powiadomienia</Label>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={testingNtfy}
+                    onClick={async () => {
+                      setTestingNtfy(true);
+                      try {
+                        const result = await testNtfy();
+                        if (result.success) {
+                          alert('Powiadomienie ntfy wysłane!');
+                        } else {
+                          alert('Błąd: ' + (result.error || 'Nieznany błąd'));
+                        }
+                      } catch (err) {
+                        alert(err instanceof Error ? err.message : 'Błąd');
+                      } finally {
+                        setTestingNtfy(false);
+                      }
+                    }}
+                  >
+                    {testingNtfy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Bell className="h-4 w-4 mr-2" />}
+                    Test ntfy
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={testingEmail}
+                    onClick={async () => {
+                      setTestingEmail(true);
+                      try {
+                        const result = await testEmail();
+                        if (result.success) {
+                          alert('Email testowy wysłany!');
+                        } else {
+                          alert('Błąd: ' + (result.error || 'Nieznany błąd'));
+                        }
+                      } catch (err) {
+                        alert(err instanceof Error ? err.message : 'Błąd');
+                      } finally {
+                        setTestingEmail(false);
+                      }
+                    }}
+                  >
+                    {testingEmail ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Bell className="h-4 w-4 mr-2" />}
+                    Test Email
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Wszystkie domeny</CardDescription>
+            <CardTitle className="text-3xl">{stats.registered + stats.available}</CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Zarejestrowane</CardDescription>
+            <CardTitle className="text-3xl">{stats.registered}</CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Dostępne</CardDescription>
+            <CardTitle className="text-3xl text-green-600">{stats.available}</CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>Wygasają w 30 dni</CardDescription>
+            <CardTitle className="text-3xl text-orange-600">{stats.expiring}</CardTitle>
+          </CardHeader>
+        </Card>
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-4">
+        <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+          <DialogTrigger asChild>
+            <Button>
+              <Plus className="h-4 w-4 mr-2" />
+              Dodaj domenę
             </Button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main content */}
-      <main className="container mx-auto px-4 py-8">
-        {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>Wszystkie domeny</CardDescription>
-              <CardTitle className="text-3xl">{stats.registered + stats.available}</CardTitle>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>Zarejestrowane</CardDescription>
-              <CardTitle className="text-3xl">{stats.registered}</CardTitle>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>Dostępne</CardDescription>
-              <CardTitle className="text-3xl text-green-600">{stats.available}</CardTitle>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>Wygasają w 30 dni</CardDescription>
-              <CardTitle className="text-3xl text-orange-600">{stats.expiring}</CardTitle>
-            </CardHeader>
-          </Card>
-        </div>
-
-        {/* Actions */}
-        <div className="flex gap-4 mb-6">
-          <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="h-4 w-4 mr-2" />
-                Dodaj domenę
-              </Button>
-            </DialogTrigger>
+          </DialogTrigger>
             <DialogContent>
               <form onSubmit={handleAddDomain}>
                 <DialogHeader>
@@ -626,8 +586,7 @@ export default function DashboardPage() {
             )}
           </CardContent>
         </Card>
-      </main>
-    </div>
+      </div>
   );
 }
 
